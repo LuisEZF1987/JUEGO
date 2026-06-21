@@ -24,6 +24,7 @@ const World3D = (function(){
   let forge = { weapon:0, armor:0, amulet:0 }, panelEl = null, panelOpen = false;
   let clan = '', chatEl = null, chatInput = null, chatLines = [];   // clan + caja de chat
   let pvpOn = false;   // PvP activable: solo atacas/recibes daño de jugadores si está ON (Tab los fija)
+  let soulshots = false;   // Esquirlas de Combate: gastan oro por golpe a cambio de +daño (sumidero estilo L2)
   let myParty = [], pendingInvite = null;                          // grupo (party)
   let serverBosses = {}, contributedBosses = new Set();            // Jefes compartidos (autoritativos)
   // carga de modelos glTF (KayKit). Si falla, se usa el constructor de cajas.
@@ -407,6 +408,7 @@ const World3D = (function(){
       else if (k === 'tab'){ cycleLock(); }
       else if (k === 'p'){ partyKey(); }
       else if (k === 'k'){ togglePvp(); }
+      else if (k === 'g'){ toggleSoulshots(); }
     }
     if (['arrowup','arrowdown','arrowleft','arrowright',' ','tab'].includes(k)) e.preventDefault();
   }
@@ -476,10 +478,26 @@ const World3D = (function(){
       if (atkTimer <= 0){ const ch = heroDef(); atkTimer = 1 / ((ch && ch.stats.attackSpeed) || 1); basicHit(lockedMob); }
     }
   }
+  // Esquirlas de Combate (soulshots): gastan oro por golpe a cambio de +daño
+  const SS_MULT = 1.6, SS_COST_HIT = 4, SS_COST_SKILL = 8;
+  function consumeSoulshot(cost){
+    if (!soulshots) return 1;
+    const L = (window.Mobs && Mobs.getLoot) ? Mobs.getLoot() : null;
+    if (!L || L.gold < cost){ soulshots = false; toast('✦ Sin oro — Esquirlas agotadas, daño base'); return 1; }
+    if (window.Mobs && Mobs.spend) Mobs.spend({}, cost);
+    return SS_MULT;
+  }
+  function toggleSoulshots(){
+    const L = (window.Mobs && Mobs.getLoot) ? Mobs.getLoot() : null;
+    if (!soulshots && (!L || L.gold < SS_COST_HIT)){ toast('✦ Necesitas oro para usar Esquirlas de Combate'); return; }
+    soulshots = !soulshots;
+    toast(soulshots ? '✦ Esquirlas de Combate ACTIVADAS (+60% daño, gasta oro/golpe)' : '✦ Esquirlas desactivadas');
+  }
   function basicHit(m){
     const ch = heroDef();
     let dmg = ((ch ? ch.stats.power : 15) + forgeBonus().power) * 0.7 * (1 + (level-1)*0.12);
     if (player.buff) dmg *= (1 + player.buff.amt);
+    dmg *= consumeSoulshot(SS_COST_HIT);   // soulshots: +daño gastando oro
     if (player.model) player.model.playOnce('attack');
     if (m.isPlayer){   // PvP: el objetivo aplica el daño (el server valida que ambos tengan PvP)
       if (window.Net && Net.connected && Net.connected()) Net.send({ t:'pvphit', to:m.id, dmg:Math.round(dmg) });
@@ -507,7 +525,7 @@ const World3D = (function(){
     const power = (ch.stats.power + forgeBonus().power) * (player.buff ? (1 + player.buff.amt) : 1);
     if (sk.dash){ const dd = sk.dash.distance * WU; player.group.position.x += aim.x*dd; player.group.position.z += aim.z*dd; spawnRing(player.group.position, 1.4, '#ffffff'); }
     if (sk.offense){
-      const o = sk.offense, dmg = power * (o.mult||1);
+      const o = sk.offense, dmg = power * (o.mult||1) * consumeSoulshot(SS_COST_SKILL);   // soulshots también potencian skills
       if (o.shape === 'projectile' || o.shape === 'line'){
         spawnProjectile(aim, el, dmg, o);
       } else if (o.shape === 'nuke'){
@@ -901,7 +919,7 @@ const World3D = (function(){
       + '<div class="w-skills" id="w-skills"></div>'
       + '<div class="w-chat" id="w-chat"></div>'
       + '<input id="w-chatin" class="w-chatin" maxlength="120" placeholder="Enter para chatear…" autocomplete="off">'
-      + '<div class="w-hint"><b>mouse</b> mira · <b>clic izq</b> golpe · <b>clic der</b>/<b>Tab</b> fijar · <b>1-4</b> skills · <b>WASD</b> · <b>I</b> forja · <b>Enter</b> chat · <b>K</b> PvP · <b>Esc</b> soltar</div>';
+      + '<div class="w-hint"><b>mouse</b> mira · <b>clic izq</b> golpe · <b>clic der</b>/<b>Tab</b> fijar · <b>1-4</b> skills · <b>WASD</b> · <b>I</b> forja · <b>G</b> esquirlas · <b>Enter</b> chat · <b>K</b> PvP · <b>Esc</b> soltar</div>';
     hud._status=document.getElementById('w-status'); hud._count=document.getElementById('w-count'); hud._nation=document.getElementById('w-nation');
     hud._party=document.getElementById('w-party'); hud._pvp=document.getElementById('w-pvp');
     hud._toast=document.getElementById('w-toast'); hud._prompt=document.getElementById('w-prompt'); hud._dot=document.getElementById('w-dot');
@@ -936,7 +954,7 @@ const World3D = (function(){
     hud._toast.style.opacity = toastT > 0 ? '1' : '0';
     if (hud._lvl){ hud._lvl.textContent = 'Nv ' + level; }
     if (hud._xp){ hud._xp.style.width = Math.min(100, Math.round(xp / xpNeeded(level) * 100)) + '%'; }
-    if (hud._loot && window.Mobs){ const L = Mobs.getLoot(); hud._loot.textContent = '💰 ' + L.gold + ' oro  ·  ☠ ' + L.kills + ' bajas'; }
+    if (hud._loot && window.Mobs){ const L = Mobs.getLoot(); hud._loot.textContent = '💰 ' + L.gold + ' oro  ·  ☠ ' + L.kills + ' bajas' + (soulshots ? '  ·  ✦ Esquirlas' : ''); }
     // vida / chakra del jugador
     if (hud._hp && player){ hud._hp.style.width = (Math.max(0, player.hp/player.maxHp)*100) + '%'; if (hud._hptxt) hud._hptxt.textContent = Math.ceil(Math.max(0,player.hp)) + ' / ' + player.maxHp; }
     if (hud._ck && player){ hud._ck.style.width = (player.maxChakra ? player.chakra/player.maxChakra*100 : 0) + '%'; }
