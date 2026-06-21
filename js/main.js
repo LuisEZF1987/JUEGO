@@ -24,14 +24,17 @@
   function norm(s){ return s.toString().trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[.,;:!¡¿?]/g,'').replace(/\s+/g,' '); }
 
   // ---------------- navegación ----------------
-  const SCREENS = ['select-screen','puzzle-screen','vault-screen','game-screen'];
+  const SCREENS = ['select-screen','puzzle-screen','vault-screen','nations-screen','view3d-screen','game-screen'];
   function showScreen(id){
     if (id !== 'game-screen' && game){ game.stop(); game = null; }
+    if (id !== 'view3d-screen') View3D.stop();
     SCREENS.forEach(s => { $(s).hidden = (s !== id); });
     document.querySelectorAll('#mainnav .tab').forEach(t => t.classList.toggle('active', t.dataset.screen === id));
     if (id === 'select-screen') buildSelect();
     if (id === 'puzzle-screen') buildPuzzles();
     if (id === 'vault-screen') buildVault();
+    if (id === 'nations-screen') buildNations();
+    if (id === 'view3d-screen') enter3D();
   }
 
   // ---------------- selección de héroes ----------------
@@ -308,6 +311,47 @@
         }).join('') + '</div></div>';
     }).join('');
     grid.innerHTML = html;
+  }
+
+  // ---------------- Vista 3D (tercera persona) ----------------
+  let hero3dId = 'kael';
+  function enter3D(){
+    buildHero3DBar();
+    const char = CHARACTERS.find(c => c.id === hero3dId) || CHARACTERS[0];
+    View3D.init($('scene3d'), char);
+    updateNation3DInfo(char);
+  }
+  function buildHero3DBar(){
+    const bar = $('hero3d-bar');
+    bar.innerHTML = CHARACTERS.map(c => {
+      const m = ELEMENT_META[c.element], on = c.id === hero3dId;
+      return '<button class="h3chip '+(on?'on':'')+'" data-id="'+c.id+'" style="--el:'+m.color+'">'+m.emoji+' '+c.name+' <small>'+c.archetype.name+'</small></button>';
+    }).join('');
+    bar.querySelectorAll('.h3chip').forEach(b => b.addEventListener('click', () => {
+      hero3dId = b.dataset.id;
+      const ch = CHARACTERS.find(c => c.id === hero3dId);
+      View3D.setHero(ch); updateNation3DInfo(ch); buildHero3DBar();
+    }));
+  }
+  function updateNation3DInfo(char){
+    const t = NATION_THEME[char.element], m = ELEMENT_META[char.element];
+    $('nation3d-info').innerHTML = '<b>'+m.emoji+' '+char.nation+'</b> · '+char.element+' — <i>'+(t?t.biome:'')+'</i>'
+      + '<br><small>'+(t?t.desc:'')+' · Héroe: '+char.name+' ('+char.race+', '+char.archetype.name+')</small>';
+  }
+  function buildNations(){
+    const grid = $('nations-grid');
+    grid.innerHTML = CHARACTERS.map(c => {
+      const m = ELEMENT_META[c.element], t = NATION_THEME[c.element];
+      return '<article class="nation" style="--el:'+m.color+';--glow:'+m.glow+'">'
+        + '<div class="nflag">'+m.emoji+'</div>'
+        + '<h3>'+c.nation+'</h3>'
+        + '<div class="nelem">'+c.element+(t?' · '+t.biome:'')+'</div>'
+        + '<p>'+(t?t.desc:'')+'</p>'
+        + '<div class="nhero">Héroe: <b>'+c.name+'</b> — '+c.race+' · '+c.archetype.name+'</div>'
+        + '<button class="nview" data-id="'+c.id+'">🧊 Ver en 3D</button>'
+        + '</article>';
+    }).join('');
+    grid.querySelectorAll('.nview').forEach(b => b.addEventListener('click', () => { hero3dId = b.dataset.id; showScreen('view3d-screen'); }));
   }
 
   // ---------------- init ----------------

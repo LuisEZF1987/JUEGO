@@ -16,6 +16,8 @@
       <button class="tab active" data-screen="select-screen">⚔️ Héroes</button>
       <button class="tab" data-screen="puzzle-screen">🧩 Acertijos</button>
       <button class="tab" data-screen="vault-screen">🗝️ Bóveda</button>
+      <button class="tab" data-screen="nations-screen">🗺️ Naciones</button>
+      <button class="tab" data-screen="view3d-screen">🎮 Batalla 3D</button>
     </div>
   </nav>
 
@@ -51,6 +53,29 @@
     <div id="vault-grid"></div>
   </section>
 
+  <!-- ===== Las 6 Naciones ===== -->
+  <section id="nations-screen" class="screen" hidden>
+    <header class="title">
+      <h1>🗺️ Las 6 Naciones</h1>
+      <p>Cada Nación encarna un elemento del anillo y es el hogar de un héroe. Entra a verla en 3D.</p>
+    </header>
+    <div id="nations-grid"></div>
+  </section>
+
+  <!-- ===== Vista 3D (tercera persona) ===== -->
+  <section id="view3d-screen" class="screen" hidden>
+    <header class="title">
+      <h1>🎮 Batalla 3D — Tercera persona</h1>
+      <p>Elige tu héroe. <b>Apunta con el ratón</b> (verás un retículo en el suelo), ataca con <b>clic izquierdo</b> o <b>1</b>, usa skills <b>2·3·4</b>, muévete con <b>WASD</b>, salta con <b>Espacio</b>, arrastra para girar la cámara y cambia el elemento del rival con <b>Q/E</b>.</p>
+    </header>
+    <div id="hero3d-bar"></div>
+    <div class="scene-wrap">
+      <canvas id="scene3d" width="980" height="600"></canvas>
+      <div id="hud3d" class="hud3d"></div>
+    </div>
+    <div id="nation3d-info" class="nation3d-info"></div>
+  </section>
+
   <!-- ===== Juego ===== -->
   <section id="game-screen" class="screen" hidden>
     <div class="topbar">
@@ -74,6 +99,15 @@
 <script src="js/combat.js"></script>
 <script src="js/game.js"></script>
 <script src="js/puzzles.js"></script>
+<script src="js/three.min.js"></script>
+<script src="js/lib/CopyShader.js"></script>
+<script src="js/lib/LuminosityHighPassShader.js"></script>
+<script src="js/lib/EffectComposer.js"></script>
+<script src="js/lib/RenderPass.js"></script>
+<script src="js/lib/ShaderPass.js"></script>
+<script src="js/lib/UnrealBloomPass.js"></script>
+<script src="js/hero3d.js"></script>
+<script src="js/view3d.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>
