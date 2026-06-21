@@ -14,6 +14,7 @@ const World3D = (function(){
   const keys = new Set();
   let dragging = false, lastX = 0, lastY = 0, moved = 0;
   let camYaw = Math.PI, camPitch = 0.42, camDist = 9;
+  let pointerLocked = false;   // mouse-look: mover el mouse gira la cámara (como girar la cabeza/mirada)
   let stateTimer = 0, myName = '', curNation = 'Centro';
   let hud = null, statusTxt = 'Conectando…', playerCount = 1, toastT = 0;
   // combate del Mundo
@@ -22,6 +23,7 @@ const World3D = (function(){
   // forja / inventario
   let forge = { weapon:0, armor:0, amulet:0 }, panelEl = null, panelOpen = false;
   let clan = '', chatEl = null, chatInput = null, chatLines = [];   // clan + caja de chat
+  let pvpOn = false;   // PvP activable: solo atacas/recibes daño de jugadores si está ON (Tab los fija)
   let myParty = [], pendingInvite = null;                          // grupo (party)
   let serverBosses = {}, contributedBosses = new Set();            // Jefes compartidos (autoritativos)
   // carga de modelos glTF (KayKit). Si falla, se usa el constructor de cajas.
@@ -119,11 +121,11 @@ const World3D = (function(){
 
     hud = document.getElementById('worldhud');
     buildHUD();
-    // poblado (casas/árboles) + criaturas/jefes a cazar
-    if (window.Mobs){
-      Mobs.buildEnvironment(THREE, scene, nations);
-      Mobs.preload(THREE).then(() => Mobs.populate(THREE, scene, nations));
-    }
+    // poblado: aldeas KayKit + ambiente (town.js); si no, fallback a cajas (mobs.js)
+    if (window.Town) Town.build(THREE, scene, nations);
+    else if (window.Mobs) Mobs.buildEnvironment(THREE, scene, nations);
+    // criaturas/jefes a cazar
+    if (window.Mobs) Mobs.preload(THREE).then(() => Mobs.populate(THREE, scene, nations));
     // apuntado (raycaster) + anillo del objetivo fijado
     raycaster = new THREE.Raycaster();
     ndc = new THREE.Vector2();
@@ -193,8 +195,8 @@ const World3D = (function(){
     Net.connect(myName, char.id, clan, {
       welcome:(m)=>{ statusTxt='Conectado'; playerCount = 1 + (m.players?m.players.length:0); (m.players||[]).forEach(addRemote); pushSave(); if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(bossReport); },
       join:(p)=>{ addRemote(p); playerCount++; chatLog('➕ ' + plabel(p) + ' entró al mundo'); },
-      state:(m)=>{ const r=remote.get(m.id); if (r){ r.tx=m.x; r.tz=m.z; r.try=m.ry; r.moving=(m.anim==='walk'); } },
-      leave:(id)=>{ const r=remote.get(id); if (r){ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); remote.delete(id); playerCount=Math.max(1,playerCount-1); } },
+      state:(m)=>{ const r=remote.get(m.id); if (r){ r.tx=m.x; r.tz=m.z; r.try=m.ry; r.moving=(m.anim==='walk'); if (m.pvp!=null) r.pvp=!!m.pvp; if (m.hp!=null) r.hp=m.hp; if (m.mhp!=null) r.maxHp=m.mhp; } },
+      leave:(id)=>{ const r=remote.get(id); if (r){ if (lockedMob===r) lockedMob=null; if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); remote.delete(id); playerCount=Math.max(1,playerCount-1); } },
       chat:(m)=>{ chatLog('💬 ' + plabel(m) + ': ' + m.text); },   // [clan] nombre: texto
       party:(m)=>{ onParty(m); },
       clan:(m)=>{ const r = remote.get(m.id); if (r){ r.clan = m.clan; refreshNameplate(r); } },
@@ -202,6 +204,7 @@ const World3D = (function(){
       boss:(m)=>{ serverBosses[m.el] = { hp:m.hp, maxHp:m.maxHp, dead:m.dead }; },
       bosses:(m)=>{ (m.list||[]).forEach(b => serverBosses[b.el] = { hp:b.hp, maxHp:b.maxHp, dead:b.dead }); },
       bossdead:(m)=>{ onBossDead(m); },
+      pvphit:(m)=>{ if (pvpOn && player && !player.dead) damagePlayer(m.dmg||0); },
       close:()=>{ statusTxt='Desconectado'; if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(null); },
       error:()=>{ statusTxt='Sin conexión'; if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(null); },
     });
@@ -213,7 +216,7 @@ const World3D = (function(){
     const f = buildFighter(ch);
     f.group.position.set(p.x||0, 0, p.z||0); f.group.rotation.y = p.ry||0; scene.add(f.group);
     const nameSprite = makeTextSprite(plabel(p), p.clan?'#ffe08a':'#cde3ff', null); nameSprite.scale.set(3.6, 0.9, 1); nameSprite.position.set(f.group.position.x, 3.4, f.group.position.z); scene.add(nameSprite);
-    remote.set(p.id, Object.assign({ id:p.id, name:p.name, clan:p.clan, hero:p.hero, tx:p.x||0, tz:p.z||0, try:p.ry||0, nameSprite, moving:false }, f));
+    remote.set(p.id, Object.assign({ id:p.id, name:p.name, clan:p.clan, hero:p.hero, tx:p.x||0, tz:p.z||0, try:p.ry||0, nameSprite, moving:false }, f, { isPlayer:true, pvp:!!p.pvp, hp:p.hp||100, maxHp:p.mhp||100 }));
   }
   // re-genera la placa de nombre de un jugador remoto (al cambiar de clan, sin reconectar)
   function refreshNameplate(r){
@@ -336,30 +339,45 @@ const World3D = (function(){
     window.addEventListener('keydown', onKey); window.addEventListener('keyup', onKeyUp);
     canvasEl.addEventListener('pointerdown', onDown); window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
     canvasEl.addEventListener('wheel', onWheel, { passive:false });
+    document.addEventListener('pointerlockchange', onPLChange);
+  }
+  function onPLChange(){
+    pointerLocked = (document.pointerLockElement === canvasEl);
+    if (hud) hud.classList.toggle('lookcam', pointerLocked);   // muestra el punto de mira al centro
+    if (ndc){ ndc.x = 0; ndc.y = 0; }                          // al fijar el mouse, el "cursor" pasa a ser el centro
   }
   function onKey(e){
     if (!active) return;
     const k = e.key.toLowerCase(); keys.add(k);
-    if (k === 'enter'){ if (chatInput){ chatInput.focus(); e.preventDefault(); } return; }   // abrir chat
+    if (k === 'enter'){ if (document.exitPointerLock) document.exitPointerLock(); if (chatInput){ chatInput.focus(); e.preventDefault(); } return; }   // abrir chat (suelta la cámara)
     if (k === 'i'){ togglePanel(); }
-    else if (k === 'escape'){ if (panelOpen) togglePanel(); else lockedMob = null; }
+    else if (k === 'escape'){ if (pointerLocked && document.exitPointerLock) document.exitPointerLock(); else if (panelOpen) togglePanel(); else lockedMob = null; }
     else if (player && !player.dead && !panelOpen){
       if (k === '1') castSkill(0); else if (k === '2') castSkill(1);
       else if (k === '3') castSkill(2); else if (k === '4') castSkill(3);
       else if (k === 'tab'){ cycleLock(); }
       else if (k === 'p'){ partyKey(); }
+      else if (k === 'k'){ togglePvp(); }
     }
     if (['arrowup','arrowdown','arrowleft','arrowright',' ','tab'].includes(k)) e.preventDefault();
   }
   function onKeyUp(e){ keys.delete(e.key.toLowerCase()); }
-  function onDown(e){ if (!active || e.button!==0) return; dragging=true; lastX=e.clientX; lastY=e.clientY; moved=0; }
-  function onMove(e){
-    if (ndc && canvasEl){ const r = canvasEl.getBoundingClientRect(); ndc.x = ((e.clientX-r.left)/r.width)*2-1; ndc.y = -((e.clientY-r.top)/r.height)*2+1; }
-    if (!dragging || !active) return;
-    const dx=e.clientX-lastX, dy=e.clientY-lastY; moved+=Math.abs(dx)+Math.abs(dy);
-    camYaw -= dx*0.006; camPitch=Math.max(0.1,Math.min(1.1,camPitch+dy*0.005)); lastX=e.clientX; lastY=e.clientY;
+  function onDown(e){
+    if (!active) return;
+    const usable = player && !player.dead && !panelOpen && !chatting();
+    if (!pointerLocked && !panelOpen && !chatting() && canvasEl.requestPointerLock){ try { canvasEl.requestPointerLock(); } catch(_){} }   // cualquier clic "toma" la cámara (mouse-look)
+    if (e.button === 2){ if (usable) cycleLock(); return; }   // clic DERECHO → fijar objetivo (como Tab)
+    if (e.button === 0){ if (usable) castSkill(0); }          // clic IZQUIERDO → golpe (skill 1, como el botón 1)
   }
-  function onUp(){ if (active && dragging && moved < 7 && player && !player.dead && !panelOpen){ const m = pickMobAtCursor(); lockedMob = m || null; } dragging=false; }
+  function onMove(e){
+    if (pointerLocked){   // mouse-look: el movimiento del mouse gira la cámara (como girar la cabeza)
+      camYaw -= (e.movementX||0) * 0.0026;
+      camPitch = Math.max(0.06, Math.min(1.3, camPitch + (e.movementY||0) * 0.0022));
+      return;
+    }
+    if (ndc && canvasEl){ const r = canvasEl.getBoundingClientRect(); ndc.x = ((e.clientX-r.left)/r.width)*2-1; ndc.y = -((e.clientY-r.top)/r.height)*2+1; }
+  }
+  function onUp(){ dragging=false; }
   function pickMobAtCursor(){
     if (!raycaster || !ndc || !window.Mobs || !Mobs.pick) return null;
     raycaster.setFromCamera(ndc, camera); return Mobs.pick(raycaster);
@@ -370,11 +388,24 @@ const World3D = (function(){
   function heroDef(){ return CHARACTERS.find(c => c.id === player.hero); }
   // fija/cicla el objetivo más cercano dentro de un buen rango (estilo L2)
   function cycleLock(){
-    if (!window.Mobs || !Mobs.targetsNear) return;
-    const list = Mobs.targetsNear(player.group.position, 35);
+    const px=player.group.position.x, pz=player.group.position.z;
+    const d2 = o => (o.group.position.x-px)**2 + (o.group.position.z-pz)**2;
+    let players = [];
+    if (pvpOn){ remote.forEach(r => { if (r.pvp && r.group && d2(r) <= 35*35) players.push(r); }); players.sort((a,b)=>d2(a)-d2(b)); }
+    let beasts = (window.Mobs && Mobs.targetsNear) ? Mobs.targetsNear(player.group.position, 35).slice() : [];
+    beasts.sort((a,b)=>d2(a)-d2(b));
+    const list = players.concat(beasts);   // jugadores (PvP) primero, luego bestias → Tab prioriza al enemigo
     if (!list.length) return;
     if (!lockedMob || lockedMob.dead || list.indexOf(lockedMob) < 0){ lockedMob = list[0]; return; }
     lockedMob = list[(list.indexOf(lockedMob) + 1) % list.length];   // cicla al siguiente
+  }
+  // PvP activable: alterna tu bandera y la anuncia al instante
+  function togglePvp(){
+    pvpOn = !pvpOn;
+    if (!pvpOn && lockedMob && lockedMob.isPlayer) lockedMob = null;   // suelta el objetivo-jugador al desactivar
+    if (hud && hud._pvp) hud._pvp.hidden = !pvpOn;
+    if (window.Net && Net.connected && Net.connected()) Net.send({ t:'state', x:player.group.position.x, y:0, z:player.group.position.z, ry:player.group.rotation.y, nation:curNation, anim:'idle', pvp:pvpOn, hp:Math.round(player.hp), mhp:Math.round(player.maxHp) });
+    toast(pvpOn ? '⚔ PvP ACTIVADO — Tab fija a otros jugadores con PvP; cuídate, también te pueden atacar' : '🛡 PvP desactivado — a salvo de otros jugadores');
   }
   // aparición inicial: al borde de la 1ª Nación (para tener combate cerca)
   function spawnPoint(){
@@ -401,7 +432,12 @@ const World3D = (function(){
     let dmg = ((ch ? ch.stats.power : 15) + forgeBonus().power) * 0.7 * (1 + (level-1)*0.12);
     if (player.buff) dmg *= (1 + player.buff.amt);
     if (player.model) player.model.playOnce('attack');
-    Mobs.damageMob(m, dmg, { element: ch ? ch.element : null });
+    if (m.isPlayer){   // PvP: el objetivo aplica el daño (el server valida que ambos tengan PvP)
+      if (window.Net && Net.connected && Net.connected()) Net.send({ t:'pvphit', to:m.id, dmg:Math.round(dmg) });
+      floatWorldText(m.group.position, '-'+Math.round(dmg), '#ff9a3c');
+    } else {
+      Mobs.damageMob(m, dmg, { element: ch ? ch.element : null });
+    }
   }
   function castSkill(i){
     const ch = heroDef(); if (!ch) return;
@@ -486,10 +522,10 @@ const World3D = (function(){
     floatWorldText(player.group.position, '-'+Math.round(amount), '#ff7b7b');
     if (player.hp <= 0){ player.hp = 0; killPlayer(); }
   }
-  function killPlayer(){ player.dead = true; player.respawn = 4; lockedMob = null; if (panelOpen) togglePanel(); toast('💀 Has caído. Reapareces en la plaza…'); }
+  function killPlayer(){ player.dead = true; player.respawn = 3.2; lockedMob = null; if (panelOpen) togglePanel(); toast('💀 Has caído. Reapareces en la plaza…'); }
   function respawnPlayer(){
     player.dead = false; player.hp = player.maxHp; player.chakra = player.maxChakra; player.shield = 0; player.buff = null; player.buffDef = null;
-    player.group.position.set(0,0,6); player.targetFacing = Math.PI;
+    player.group.position.set(0,0,6); player.group.scale.setScalar(1); player.targetFacing = Math.PI;
     if (player.model) player.model.revive();
   }
   // actualizaciones de combate por frame
@@ -582,7 +618,7 @@ const World3D = (function(){
     player.maxChakra = (ch.stats.maxChakra||100) + fb.chakra;
     player.hp = Math.min(player.hp, player.maxHp); player.chakra = Math.min(player.chakra, player.maxChakra);
   }
-  function togglePanel(){ if (!panelEl) return; panelOpen = panelEl.hidden; panelEl.hidden = !panelOpen; if (panelOpen) buildPanel(); }
+  function togglePanel(){ if (!panelEl) return; panelOpen = panelEl.hidden; panelEl.hidden = !panelOpen; if (panelOpen){ buildPanel(); if (document.exitPointerLock) document.exitPointerLock(); } }
   function buildPanel(){
     if (!panelEl) return;
     const L = (window.Mobs && Mobs.getLoot) ? Mobs.getLoot() : { gold:0, mats:{}, kills:0 };
@@ -638,8 +674,10 @@ const World3D = (function(){
 
     // muerte / respawn del jugador
     if (player.dead){
-      if (player.model) player.model.update(dt, { dead:true });
-      player.respawn -= dt; if (player.respawn <= 0) respawnPlayer();
+      if (player.model) player.model.update(dt, { dead:true });   // animación de caída
+      player.respawn -= dt;
+      player.group.scale.setScalar(Math.max(0.001, Math.min(1, player.respawn / 1.1)));   // se desvanece (encoge) antes de reaparecer
+      if (player.respawn <= 0) respawnPlayer();
     }
 
     let moving = false;
@@ -669,7 +707,7 @@ const World3D = (function(){
 
     // enviar mi estado ~10/s
     stateTimer -= dt;
-    if (stateTimer <= 0 && Net.connected()){ stateTimer = 0.1; Net.send({ t:'state', x:player.group.position.x, y:0, z:player.group.position.z, ry:player.group.rotation.y, nation:curNation, anim:moving?'walk':'idle' }); }
+    if (stateTimer <= 0 && Net.connected()){ stateTimer = 0.1; Net.send({ t:'state', x:player.group.position.x, y:0, z:player.group.position.z, ry:player.group.rotation.y, nation:curNation, anim:moving?'walk':'idle', pvp:pvpOn, hp:Math.round(player.hp), mhp:Math.round(player.maxHp) }); }
 
     // Nación actual
     curNation = 'Centro'; let bestN = 15*15;
@@ -689,6 +727,7 @@ const World3D = (function(){
     updateHUD();
   }
   function updateCamera(dt){
+    if (!player.dead && !pointerLocked) camYaw = lerpAngle(camYaw, player.targetFacing + Math.PI, Math.min(1, 3.5*dt));   // sin mouse-look: la cámara sigue detrás del personaje
     const tx=player.group.position.x, ty=player.group.position.y+1.4, tz=player.group.position.z, cp=Math.cos(camPitch);
     const cx=tx+Math.sin(camYaw)*camDist*cp, cy=ty+Math.sin(camPitch)*camDist, cz=tz+Math.cos(camYaw)*camDist*cp, k=Math.min(1,9*dt);
     camera.position.x+=(cx-camera.position.x)*k; camera.position.y+=(cy-camera.position.y)*k; camera.position.z+=(cz-camera.position.z)*k;
@@ -720,8 +759,10 @@ const World3D = (function(){
       + '<div class="w-level"><span id="w-lvl">Nv 1</span><div class="w-xpbar"><i id="w-xp"></i></div></div>'
       + '<div class="w-bossbar" id="w-bossbar" hidden><div class="w-bb-name" id="w-bb-name"></div><div class="w-bb-track"><i id="w-bb-fill"></i></div><div class="w-bb-hp" id="w-bb-hptxt"></div></div>'
       + '<div class="w-party" id="w-party"></div>'
+      + '<div class="w-pvpflag" id="w-pvp" hidden>⚔ PvP activado</div>'
       + '<div class="w-loot" id="w-loot"></div>'
       + '<div class="w-target" id="w-target"></div>'
+      + '<div class="w-boss" id="w-boss"></div>'
       + '<div class="w-toast" id="w-toast"></div>'
       + '<div class="w-prompt" id="w-prompt"></div>'
       + '<div class="w-vitals"><div class="w-name" id="w-pname"></div>'
@@ -730,11 +771,11 @@ const World3D = (function(){
       + '<div class="w-skills" id="w-skills"></div>'
       + '<div class="w-chat" id="w-chat"></div>'
       + '<input id="w-chatin" class="w-chatin" maxlength="120" placeholder="Enter para chatear…" autocomplete="off">'
-      + '<div class="w-hint"><b>clic</b> objetivo · <b>1-4</b> skills · <b>WASD</b> · <b>I</b> forja · <b>Enter</b> chat · <b>P</b> grupo · <b>Tab</b> fijar</div>';
+      + '<div class="w-hint"><b>mouse</b> mira · <b>clic izq</b> golpe · <b>clic der</b>/<b>Tab</b> fijar · <b>1-4</b> skills · <b>WASD</b> · <b>I</b> forja · <b>Enter</b> chat · <b>K</b> PvP · <b>Esc</b> soltar</div>';
     hud._status=document.getElementById('w-status'); hud._count=document.getElementById('w-count'); hud._nation=document.getElementById('w-nation');
-    hud._party=document.getElementById('w-party');
+    hud._party=document.getElementById('w-party'); hud._pvp=document.getElementById('w-pvp');
     hud._toast=document.getElementById('w-toast'); hud._prompt=document.getElementById('w-prompt'); hud._dot=document.getElementById('w-dot');
-    hud._loot=document.getElementById('w-loot'); hud._target=document.getElementById('w-target');
+    hud._loot=document.getElementById('w-loot'); hud._target=document.getElementById('w-target'); hud._boss=document.getElementById('w-boss');
     hud._bossbar=document.getElementById('w-bossbar'); hud._bbName=document.getElementById('w-bb-name'); hud._bbFill=document.getElementById('w-bb-fill'); hud._bbHp=document.getElementById('w-bb-hptxt');
     hud._lvl=document.getElementById('w-lvl'); hud._xp=document.getElementById('w-xp');
     hud._pname=document.getElementById('w-pname'); hud._hp=document.getElementById('w-hp'); hud._hptxt=document.getElementById('w-hptxt');
@@ -779,7 +820,7 @@ const World3D = (function(){
     }); }
     // objetivo (fijado o más cercano)
     if (hud._target && window.Mobs){ const m = (lockedMob && !lockedMob.dead) ? lockedMob : Mobs.getNearest();
-      if (m && !m.dead){ hud._target.style.display = 'block'; hud._target.innerHTML = ((lockedMob===m)?'🎯 ':'') + (m.isBoss?'☠ ':'🐾 ') + m.name + ' — ' + Math.max(0,Math.ceil(m.hp)) + ' / ' + m.maxHp; }
+      if (m && !m.dead){ hud._target.style.display = 'block'; hud._target.innerHTML = ((lockedMob===m)?'🎯 ':'') + (m.isPlayer?'⚔ ':m.isBoss?'☠ ':'🐾 ') + esc(m.name) + ' — ' + Math.max(0,Math.ceil(m.hp)) + ' / ' + m.maxHp; }
       else hud._target.style.display = 'none';
       const bb = (lockedMob && lockedMob.isBoss && !lockedMob.dead) ? lockedMob : null;   // barra de Jefe estilo raid (HP compartido)
       if (hud._bossbar){
@@ -788,6 +829,27 @@ const World3D = (function(){
           hud._bbFill.style.width = (frac*100).toFixed(1) + '%'; hud._bbHp.textContent = Math.max(0, Math.ceil(bb.hp)) + ' / ' + bb.maxHp;
         } else hud._bossbar.hidden = true;
       } }
+    // brújula: apunta al Dios vivo más cercano
+    if (hud._boss){
+      let best = null, bd = Infinity;
+      if (player && nations) for (const n of nations){
+        const sb = serverBosses[n.element];
+        if (sb && sb.dead) continue;                       // muerto → no apuntar
+        const dx = n.x - player.group.position.x, dz = n.z - player.group.position.z, d = Math.hypot(dx, dz);
+        if (d < bd){ bd = d; best = { el:n.element, dx, dz, d }; }
+      }
+      if (best && best.d > 6){                              // ocúltalo solo cuando ya estás encima
+        const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw), rx = Math.cos(camYaw), rz = -Math.sin(camYaw);
+        const sy = (best.dx/best.d)*fx + (best.dz/best.d)*fz, sx = (best.dx/best.d)*rx + (best.dz/best.d)*rz;
+        const ai = ((Math.round(Math.atan2(sx, sy)/(Math.PI/4)) % 8) + 8) % 8;
+        const arrow = ['↑','↗','→','↘','↓','↙','←','↖'][ai];
+        const em = (typeof ELEMENT_META!=='undefined' && ELEMENT_META[best.el]) ? ELEMENT_META[best.el].emoji : '☠';
+        const col = (typeof NATION_THEME!=='undefined' && NATION_THEME[best.el]) ? NATION_THEME[best.el].accent : '#ffce54';
+        hud._boss.style.display = 'block'; hud._boss.style.color = col;
+        hud._boss.classList.toggle('near', best.d < 18);
+        hud._boss.innerHTML = em + ' Dios de ' + best.el + ' <span class="ar">' + arrow + '</span> ' + Math.round(best.d) + 'm';
+      } else hud._boss.style.display = 'none';
+    }
   }
   function toast(msg){ if (hud && hud._toast){ hud._toast.textContent = msg; toastT = 3.2; } }
 

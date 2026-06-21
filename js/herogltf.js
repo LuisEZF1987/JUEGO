@@ -182,7 +182,10 @@
       playLoop(key);
     }
     function revive(){
-      isDead = false; locked = null; lockT = 0; curKey = null; curAction = null;
+      isDead = false; locked = null; lockT = 0;
+      // crossfade desde la pose de muerte (quedaba "clamped" tendida) hacia idle de pie —
+      // si no se cruza, el héroe revivía ACOSTADO. Mantener die como curAction lo funde sin T-pose.
+      curAction = actions.die || null; curKey = actions.die ? 'die' : null;
       playLoop('idle');
     }
     function dispose(){ try { mixer.stopAllAction(); mixer.uncacheRoot(root); } catch(e){} }

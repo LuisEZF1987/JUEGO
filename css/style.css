@@ -190,6 +190,8 @@ canvas#scene3d:active{cursor:grabbing}
 canvas#worldcanvas{display:block;width:100%;max-width:980px;height:auto;aspect-ratio:980/600;margin:0 auto;background:#0a0c14;border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 50px rgba(0,0,0,.5);cursor:grab;touch-action:none}
 canvas#worldcanvas:active{cursor:grabbing}
 .worldhud{position:absolute;inset:0;pointer-events:none;font-family:"Segoe UI",system-ui,sans-serif}
+/* punto de mira (solo en modo mouse-look / pointer lock) */
+.worldhud.lookcam::after{content:'';position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;border:2px solid rgba(255,255,255,.8);border-radius:50%;box-shadow:0 0 0 1px rgba(0,0,0,.6),0 0 8px rgba(0,0,0,.7);pointer-events:none}
 .worldhud .w-top{position:absolute;top:12px;left:14px;background:rgba(0,0,0,.5);color:#eef;padding:7px 12px;border-radius:9px;font-size:13px;display:flex;align-items:center;gap:7px}
 .worldhud .dot{width:10px;height:10px;border-radius:50%;background:#888;display:inline-block}
 .worldhud .w-hint{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.5);color:#cdd5f5;padding:6px 12px;border-radius:9px;font-size:11.5px;white-space:nowrap}
@@ -203,6 +205,9 @@ canvas#worldcanvas:active{cursor:grabbing}
 .worldhud .w-toast{position:absolute;top:54px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.65);color:#9be88a;padding:7px 14px;border-radius:9px;font-size:13px;transition:opacity .4s;opacity:0}
 .worldhud .w-loot{position:absolute;top:12px;right:14px;background:rgba(0,0,0,.5);color:#ffd86b;padding:7px 12px;border-radius:9px;font-size:13px;font-weight:700}
 .worldhud .w-target{position:absolute;top:50px;left:50%;transform:translateX(-50%);background:rgba(120,24,24,.6);color:#ffd6c8;padding:5px 13px;border-radius:9px;font-size:13px;font-weight:700;display:none;white-space:nowrap}
+.worldhud .w-boss{position:absolute;top:13px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.18);padding:5px 14px;border-radius:20px;font-size:13px;font-weight:800;text-shadow:0 1px 2px #000;white-space:nowrap;display:none;pointer-events:none}
+.worldhud .w-boss .ar{font-size:18px;display:inline-block;vertical-align:-2px;margin:0 3px}
+.worldhud .w-boss.near{border-color:rgba(255,210,90,.8);box-shadow:0 0 12px rgba(255,200,80,.4)}
 .worldhud .w-level{position:absolute;top:50px;left:14px;display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.5);padding:6px 11px;border-radius:9px;color:#ffe08a;font-weight:700;font-size:13px}
 .worldhud .w-party{position:absolute;top:84px;left:14px;background:rgba(124,92,255,.28);border:1px solid rgba(124,92,255,.6);color:#dfe0ff;padding:5px 11px;border-radius:9px;font-size:12px;font-weight:700;max-width:300px}
 .worldhud .w-party:empty{display:none}
@@ -215,6 +220,9 @@ canvas#worldcanvas:active{cursor:grabbing}
 .worldhud .w-bb-track{height:15px;background:#0a0608;border:1px solid #5a1f28;border-radius:8px;overflow:hidden}
 .worldhud .w-bb-track i{display:block;height:100%;background:linear-gradient(90deg,#ff3b3b,#ff7a3c);box-shadow:inset 0 0 12px rgba(255,90,60,.7);transition:width .18s linear}
 .worldhud .w-bb-hp{margin-top:3px;font-size:11px;color:#ffd2d2;font-weight:700}
+/* indicador de PvP activado */
+.worldhud .w-pvpflag{position:absolute;top:84px;right:14px;background:rgba(255,60,60,.85);color:#fff;border:1px solid #ff9a9a;border-radius:9px;padding:5px 11px;font-size:12px;font-weight:800;letter-spacing:.4px;box-shadow:0 0 14px rgba(255,60,60,.6);pointer-events:none}
+.worldhud .w-pvpflag[hidden]{display:none}
 .worldhud .w-xpbar{width:160px;height:9px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.22);border-radius:6px;overflow:hidden}
 .worldhud .w-xpbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#caa23a,#ffd86b);transition:width .2s}
 .worldhud .w-vitals{position:absolute;bottom:12px;left:14px;min-width:230px}

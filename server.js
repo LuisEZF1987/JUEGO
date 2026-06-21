@@ -67,7 +67,7 @@ function frame(obj, opcode){
 }
 function send(c, obj){ try { c.socket.write(frame(obj, 0x1)); } catch(e){} }
 function broadcast(obj, exceptId){ for (const c of clients.values()){ if (c.id !== exceptId) send(c, obj); } }
-function pub(c){ return { id:c.id, name:c.name, hero:c.hero, clan:c.clan||'', x:c.x, y:c.y, z:c.z, ry:c.ry, nation:c.nation, anim:c.anim }; }
+function pub(c){ return { id:c.id, name:c.name, hero:c.hero, clan:c.clan||'', x:c.x, y:c.y, z:c.z, ry:c.ry, nation:c.nation, anim:c.anim, pvp:c.pvp||false, hp:c.hp||100, mhp:c.mhp||100 }; }
 
 // ---- grupos (party) ----
 let nextParty = 1;
@@ -99,7 +99,7 @@ httpServer.on('upgrade', (req, socket) => {
   socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
 
   const id = nextId++;
-  const c = { socket, id, name:'Héroe', hero:'kael', x:0, y:0, z:0, ry:0, nation:'centro', anim:'idle', alive:true, party:null };
+  const c = { socket, id, name:'Héroe', hero:'kael', x:0, y:0, z:0, ry:0, nation:'centro', anim:'idle', alive:true, party:null, pvp:false, hp:100, mhp:100 };
   clients.set(id, c);
   let buf = Buffer.alloc(0), closed = false;
 
@@ -145,7 +145,8 @@ function handleMsg(c, data){
     if (c.name && m.save && typeof m.save === 'object'){ saves[c.name] = m.save; if (m.save.clan != null) c.clan = ('' + m.save.clan).slice(0, 8); persistSaves(); }
   } else if (m.t === 'state'){
     c.x = m.x; c.y = m.y; c.z = m.z; c.ry = m.ry; c.nation = m.nation; c.anim = m.anim;
-    broadcast({ t:'state', id:c.id, x:m.x, y:m.y, z:m.z, ry:m.ry, anim:m.anim }, c.id);
+    if (m.pvp != null) c.pvp = !!m.pvp; if (m.hp != null) c.hp = m.hp; if (m.mhp != null) c.mhp = m.mhp;
+    broadcast({ t:'state', id:c.id, x:m.x, y:m.y, z:m.z, ry:m.ry, anim:m.anim, pvp:c.pvp, hp:c.hp, mhp:c.mhp }, c.id);
   } else if (m.t === 'chat'){
     broadcast({ t:'chat', id:c.id, name:c.name, clan:c.clan||'', text:('' + (m.text || '')).slice(0, 120) });
   } else if (m.t === 'party'){
@@ -161,6 +162,12 @@ function handleMsg(c, data){
   } else if (m.t === 'clan'){
     c.clan = ('' + (m.clan || '')).slice(0, 8);
     broadcast({ t:'clan', id:c.id, clan:c.clan }, c.id);   // anuncia el clan sin reconectar (evita el spam de "entró")
+  } else if (m.t === 'pvphit'){
+    const t = clients.get(m.to);
+    if (t && c.pvp && t.pvp && t.id !== c.id){   // PvP solo si AMBOS lo tienen activado
+      const dmg = Math.max(0, Math.min(9999, (+m.dmg) || 0));
+      send(t, { t:'pvphit', from:c.id, name:c.name, dmg:dmg });
+    }
   } else if (m.t === 'bosshit'){
     const b = bosses[m.el]; if (!b || b.dead) return;
     const dmg = Math.max(0, Math.min(100000, (+m.dmg) || 0));

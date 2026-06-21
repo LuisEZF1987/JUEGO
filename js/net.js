@@ -27,6 +27,7 @@ const Net = (function(){
       else if (m.t === 'boss')     cbs.boss && cbs.boss(m);
       else if (m.t === 'bosses')   cbs.bosses && cbs.bosses(m);
       else if (m.t === 'bossdead') cbs.bossdead && cbs.bossdead(m);
+      else if (m.t === 'pvphit')   cbs.pvphit && cbs.pvphit(m);
     };
     ws.onclose = () => { if (cbs.close) cbs.close(); };
     ws.onerror = (e) => { if (cbs.error) cbs.error(e); };

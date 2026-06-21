@@ -11,11 +11,12 @@
   let mobs = [], texts = [], nearest = null, pendingKills = [], bossReporter = null;
 
   // criaturas comunes (modelos animados CC de three.js)
+  // Bestias salvajes (Quaternius CC0). ANIMALS[0] = modelo del Jefe (Lobo → Dios Encadenado gigante).
   const ANIMALS = [
-    { url:'assets/models/Horse.glb',    h:1.7, fly:0,   hp:36, name:'Corcel Salvaje', gold:[6,12] },
-    { url:'assets/models/Stork.glb',    h:1.6, fly:2.2, hp:22, name:'Cigüeña',        gold:[5,10] },
-    { url:'assets/models/Flamingo.glb', h:1.6, fly:2.4, hp:20, name:'Flamenco',       gold:[5,10] },
-    { url:'assets/models/Parrot.glb',   h:1.0, fly:2.7, hp:15, name:'Loro Salvaje',   gold:[4,8]  },
+    { url:'assets/models/Wolf.glb', h:1.35, fly:0, hp:34, name:'Lobo Salvaje',  gold:[7,13] },
+    { url:'assets/models/Fox.glb',  h:0.95, fly:0, hp:18, name:'Zorro Rojo',    gold:[4,9]  },
+    { url:'assets/models/Stag.glb', h:2.1,  fly:0, hp:44, name:'Ciervo Astado', gold:[9,15] },
+    { url:'assets/models/Deer.glb', h:1.8,  fly:0, hp:30, name:'Venado Bravío', gold:[6,11] },
   ];
   // Dios Encadenado por elemento (lore) + material divino que suelta
   const GOD = {
@@ -79,15 +80,21 @@
   // ---- construir una criatura ----
   function buildMob(cfg, nation, isBoss, sx, sz){
     const src = CACHE[cfg.url]; if (!src) return null;
-    const root = src.scene.clone(true);
+    // SkeletonUtils.clone reconecta el esqueleto en mallas skinned; .clone(true) NO → la malla colapsa invisible
+    const root = (THREE.SkeletonUtils && THREE.SkeletonUtils.clone) ? THREE.SkeletonUtils.clone(src.scene) : src.scene.clone(true);
     root.traverse(o => { if (o.isMesh){ o.castShadow = true; o.frustumCulled = false;
-      if (isBoss){ o.material = (Array.isArray(o.material)?o.material[0]:o.material).clone(); o.material.color = new THREE.Color(ELEMENT_META[nation.element].color); o.material.emissive = new THREE.Color(ELEMENT_META[nation.element].glow); o.material.emissiveIntensity = 0.5; }
+      if (isBoss){ const mm = (Array.isArray(o.material)?o.material[0]:o.material).clone();
+        mm.color = new THREE.Color(ELEMENT_META[nation.element].color).multiplyScalar(0.45);   // base oscura → silueta clara contra el suelo
+        mm.emissive = new THREE.Color(ELEMENT_META[nation.element].glow); mm.emissiveIntensity = 0.85;   // brillo elemental: nunca se camufla
+        mm.metalness = 0.1; mm.roughness = 0.7; o.material = mm; }
     }});
     const group = new THREE.Group(); group.add(root);
     autoScale(root, isBoss ? 4.6 : cfg.h);
 
     const mixer = new THREE.AnimationMixer(root);
-    if (src.animations[0]){ const act = mixer.clipAction(src.animations[0]); act.play(); act.setEffectiveTimeScale(isBoss ? 0.8 : 1.1); }
+    const clips = src.animations || [];
+    const clip = clips.find(c => /walk/i.test(c.name)) || clips.find(c => /idle/i.test(c.name)) || clips[0];   // evita "Attack"/"Death" en bucle
+    if (clip){ const act = mixer.clipAction(clip); act.play(); act.setEffectiveTimeScale(isBoss ? 0.7 : 1.0); }
 
     const el = nation.element;
     const m = {
@@ -99,7 +106,7 @@
       status:{ stun:0, slow:0, burn:0, burnDps:0, burnAcc:0 }, atkCd:0,
       dead:false, respawn:0, hitFlash:0,
     };
-    if (isBoss){ const aura = new THREE.PointLight(new THREE.Color(ELEMENT_META[el].color).getHex(), 2, 12); aura.position.y = 2.5; group.add(aura); }
+    if (isBoss){ const aura = new THREE.PointLight(new THREE.Color(ELEMENT_META[el].glow).getHex(), 2.6, 16); aura.position.y = 3; group.add(aura); }
     const label = textSprite((isBoss?'☠ ':'') + m.name, isBoss?'#ffce54':'#dfe7ff', isBoss);
     label.scale.set(isBoss?6:3, isBoss?1.5:0.75, 1); label.position.y = isBoss?6.2:2.2; group.add(label);
     m.bar = makeBar(); m.bar.sprite.position.y = isBoss?5.6:1.9; group.add(m.bar.sprite);
