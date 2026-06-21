@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elemental Legacy — Prototipo</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== Barra de navegación ===== -->
+  <nav id="mainnav">
+    <div class="brand">Elemental Legacy <span>· The Broken Seal</span></div>
+    <div class="tabs">
+      <button class="tab active" data-screen="select-screen">⚔️ Héroes</button>
+      <button class="tab" data-screen="puzzle-screen">🧩 Acertijos</button>
+      <button class="tab" data-screen="vault-screen">🗝️ Bóveda</button>
+    </div>
+  </nav>
+
+  <!-- ===== Selección de personaje ===== -->
+  <section id="select-screen" class="screen">
+    <header class="title">
+      <h1>Elige tu héroe</h1>
+      <p>Uno por Nación. Cada uno tiene un <b>arquetipo</b> (tanque, mago, asesina, sanadora…), un <b>Poder pasivo</b> y <b>4 skills</b>.</p>
+    </header>
+    <div id="reliquia-bar"></div>
+    <div id="char-grid"></div>
+    <footer class="legend">
+      Ciclo elemental: <b>Fuego ▸ Viento ▸ Rayo ▸ Tierra ▸ Agua ▸ Madera ▸ Fuego</b> — cada elemento hace +25 % al siguiente y −25 % al anterior.
+    </footer>
+  </section>
+
+  <!-- ===== Cámara de Acertijos ===== -->
+  <section id="puzzle-screen" class="screen" hidden>
+    <header class="title">
+      <h1>🧩 Cámara de Acertijos</h1>
+      <p>Pon a prueba tu inteligencia: <b>lógica</b>, <b>cálculo mental</b>, <b>geometría/física</b>, <b>memoria y oído</b>. Resuélvelos —algunos <b>en equipo</b>— y desbloquea materiales, equipo y <b>Reliquias</b> (poderes).</p>
+    </header>
+    <div id="puzzle-filters"></div>
+    <div id="puzzle-list"></div>
+  </section>
+
+  <!-- ===== Bóveda de recompensas ===== -->
+  <section id="vault-screen" class="screen" hidden>
+    <header class="title">
+      <h1>🗝️ Bóveda de Recompensas</h1>
+      <p>Todo lo que ganes resolviendo acertijos. Las <b>Reliquias</b> se equipan en la pantalla de Héroes.</p>
+    </header>
+    <div id="vault-grid"></div>
+  </section>
+
+  <!-- ===== Juego ===== -->
+  <section id="game-screen" class="screen" hidden>
+    <div class="topbar">
+      <button id="back-btn">‹ Cambiar personaje</button>
+      <span class="hint">Mover: <b>WASD</b>/Flechas · Apuntar: <b>ratón</b> · Skills: <b>1 2 3 4</b> · Básico: <b>clic izq.</b> · Elemento rival: <b>Q/E</b> · Salir: <b>Esc</b></span>
+    </div>
+    <canvas id="game" width="980" height="600"></canvas>
+  </section>
+
+  <!-- ===== Modal de acertijo ===== -->
+  <div id="puzzle-modal" class="modal" hidden>
+    <div class="modal-card" id="modal-card"></div>
+  </div>
+
+</div>
+
+<!-- Orden de carga (scripts clásicos: funciona con doble clic en index.html) -->
+<script src="js/elements.js"></script>
+<script src="js/characters.js"></script>
+<script src="js/entity.js"></script>
+<script src="js/combat.js"></script>
+<script src="js/game.js"></script>
+<script src="js/puzzles.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
