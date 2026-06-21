@@ -14,3 +14,9 @@ desktop.ini
 
 # Dependencias (por si se añaden en el futuro)
 node_modules/
+
+# Herramienta local de capturas headless (verificación visual)
+.shots/
+
+# Guardado de cuentas del servidor multijugador (datos de runtime)
+saves.json

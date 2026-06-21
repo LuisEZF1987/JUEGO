@@ -8,6 +8,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "puppeteer-core": "^25.1.0",
     "ws": "^8.21.0"
   }
 }

@@ -1,18 +1,27 @@
 // ====================================================================
 //  server.js — Servidor del juego: archivos estáticos + multijugador.
 //  - Sirve la web (sin caché) en 127.0.0.1:8123.
-//  - WebSocket: sincroniza la posición/estado de los jugadores conectados
-//    para que se vean moverse por las Naciones en tiempo real.
+//  - WebSocket (RFC6455, SIN dependencias): sincroniza posición/estado de
+//    los jugadores para que se vean moverse por las Naciones en tiempo real.
+//
+//  Arráncalo con:   node server.js        (no requiere `npm install`)
+//  Luego abre:      http://localhost:8123  (cada navegador = un jugador)
 // ====================================================================
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const WebSocket = require('ws');
+const crypto = require('crypto');
 
 const ROOT = __dirname;
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = parseInt(process.env.PORT || '8123', 10);
+
+// ---- guardado por cuenta (progreso persistido por nombre) ----
+const SAVE_FILE = path.join(ROOT, 'saves.json');
+let saves = {}; try { saves = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8')) || {}; } catch (e) { saves = {}; }
+let saveTimer = null;
+function persistSaves(){ if (saveTimer) return; saveTimer = setTimeout(() => { saveTimer = null; fs.writeFile(SAVE_FILE, JSON.stringify(saves), () => {}); }, 1500); }
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -22,7 +31,8 @@ const MIME = {
   '.md':   'text/markdown; charset=utf-8',
   '.png':  'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.svg':  'image/svg+xml', '.ico': 'image/x-icon', '.wasm': 'application/wasm',
-  '.glb':  'model/gltf-binary', '.gltf': 'model/gltf+json',
+  '.glb':  'model/gltf-binary', '.gltf': 'model/gltf+json', '.bin': 'application/octet-stream',
+  '.txt':  'text/plain; charset=utf-8',
 };
 
 // ---------------- archivos estáticos ----------------
@@ -41,62 +51,116 @@ const httpServer = http.createServer((req, res) => {
   });
 });
 
-// ---------------- multijugador (WebSocket) ----------------
-const wss = new WebSocket.Server({ server: httpServer });
-const players = new Map();  // id -> { id, name, hero, x, y, z, ry, nation, anim }
+// ---------------- WebSocket (RFC6455, sin dependencias) ----------------
+const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 let nextId = 1;
+const clients = new Map();   // id -> client
 
-function broadcast(obj, exceptId) {
-  const s = JSON.stringify(obj);
-  wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN && c._pid !== exceptId) c.send(s); });
+function frame(obj, opcode){
+  const payload = (opcode === 0x9 || opcode === 0xA) ? Buffer.alloc(0) : Buffer.from(JSON.stringify(obj));
+  const len = payload.length, b0 = 0x80 | (opcode || 0x1);
+  let header;
+  if (len < 126) header = Buffer.from([b0, len]);
+  else if (len < 65536) header = Buffer.from([b0, 126, (len>>8)&255, len&255]);
+  else { header = Buffer.alloc(10); header[0]=b0; header[1]=127; header.writeUInt32BE(0,2); header.writeUInt32BE(len,6); }
+  return Buffer.concat([header, payload]);
+}
+function send(c, obj){ try { c.socket.write(frame(obj, 0x1)); } catch(e){} }
+function broadcast(obj, exceptId){ for (const c of clients.values()){ if (c.id !== exceptId) send(c, obj); } }
+function pub(c){ return { id:c.id, name:c.name, hero:c.hero, clan:c.clan||'', x:c.x, y:c.y, z:c.z, ry:c.ry, nation:c.nation, anim:c.anim }; }
+
+// ---- grupos (party) ----
+let nextParty = 1;
+const parties = new Map();   // pid -> Set<clientId>
+function partyList(pid){ const set = parties.get(pid); if (!set) return []; const out = []; for (const id of set){ const cc = clients.get(id); if (cc) out.push({ id:cc.id, name:cc.name }); } return out; }
+function toParty(pid, obj){ const set = parties.get(pid); if (!set) return; for (const id of set){ const cc = clients.get(id); if (cc) send(cc, obj); } }
+function leaveParty(c){
+  const pid = c.party; if (!pid) return; c.party = null;
+  const set = parties.get(pid); if (!set) return; set.delete(c.id);
+  if (set.size < 2){ for (const id of set){ const cc = clients.get(id); if (cc){ cc.party = null; send(cc, { t:'party', a:'members', list:[] }); } } parties.delete(pid); }
+  else toParty(pid, { t:'party', a:'members', list:partyList(pid) });
 }
 
-wss.on('connection', (ws) => {
-  const id = nextId++;
-  ws._pid = id;
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+httpServer.on('upgrade', (req, socket) => {
+  const key = req.headers['sec-websocket-key'];
+  if (!key) { socket.destroy(); return; }
+  const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');
+  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
 
-  ws.on('message', (raw) => {
-    let m; try { m = JSON.parse(raw); } catch (e) { return; }
-    if (m.t === 'join') {
-      const p = { id, name: ('' + (m.name || 'Héroe')).slice(0, 16), hero: m.hero || 'kael', x: 0, y: 0, z: 0, ry: 0, nation: 'centro', anim: 'idle' };
-      players.set(id, p);
-      // al recién llegado: su id + los demás ya presentes
-      ws.send(JSON.stringify({ t: 'welcome', id, players: Array.from(players.values()).filter(q => q.id !== id) }));
-      // a los demás: nuevo jugador
-      broadcast({ t: 'joined', player: p }, id);
-      console.log(`[+] jugador ${id} (${p.name}/${p.hero}) — total ${players.size}`);
-    } else if (m.t === 'state') {
-      const p = players.get(id);
-      if (p) { p.x = m.x; p.y = m.y; p.z = m.z; p.ry = m.ry; p.nation = m.nation; p.anim = m.anim; }
-      broadcast({ t: 'state', id, x: m.x, y: m.y, z: m.z, ry: m.ry, anim: m.anim }, id);
-    } else if (m.t === 'solve') {
-      const p = players.get(id);
-      broadcast({ t: 'solve', id, name: p ? p.name : '?', puzzle: m.puzzle, reward: m.reward }, id);
-    } else if (m.t === 'chat') {
-      const p = players.get(id);
-      broadcast({ t: 'chat', id, name: p ? p.name : '?', text: ('' + m.text).slice(0, 120) });
+  const id = nextId++;
+  const c = { socket, id, name:'Héroe', hero:'kael', x:0, y:0, z:0, ry:0, nation:'centro', anim:'idle', alive:true, party:null };
+  clients.set(id, c);
+  let buf = Buffer.alloc(0), closed = false;
+
+  function closeClient(){ if (closed) return; closed = true; leaveParty(c); clients.delete(id); broadcast({ t:'left', id }, id); try { socket.destroy(); } catch(e){} console.log('[-] jugador ' + id + ' salió — total ' + clients.size); }
+
+  socket.on('data', chunk => {
+    buf = Buffer.concat([buf, chunk]);
+    while (buf.length >= 2){
+      const masked = (buf[1] & 0x80) !== 0;
+      let len = buf[1] & 0x7f, off = 2;
+      if (len === 126){ if (buf.length < 4) break; len = buf.readUInt16BE(2); off = 4; }
+      else if (len === 127){ if (buf.length < 10) break; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+      const need = off + (masked ? 4 : 0) + len;
+      if (buf.length < need) break;
+      const opcode = buf[0] & 0x0f;
+      let payload;
+      if (masked){ const mask = buf.slice(off, off+4); payload = Buffer.alloc(len); for (let i=0;i<len;i++) payload[i] = buf[off+4+i] ^ mask[i&3]; }
+      else payload = buf.slice(off, off+len);
+      buf = buf.slice(need);
+      if (opcode === 0x8){ closeClient(); return; }                          // close
+      else if (opcode === 0x9){ try { socket.write(frame(null, 0xA)); } catch(e){} }   // ping -> pong
+      else if (opcode === 0xA){ c.alive = true; }                            // pong
+      else if (opcode === 0x1) handleMsg(c, payload.toString('utf8'));
     }
   });
-
-  ws.on('close', () => {
-    players.delete(id);
-    broadcast({ t: 'left', id });
-    console.log(`[-] jugador ${id} salió — total ${players.size}`);
-  });
-  ws.on('error', () => {});
+  socket.on('close', closeClient);
+  socket.on('error', closeClient);
 });
+
+function handleMsg(c, data){
+  let m; try { m = JSON.parse(data); } catch(e){ return; }
+  if (m.t === 'join'){
+    c.name = ('' + (m.name || 'Héroe')).slice(0, 16);
+    c.hero = m.hero || 'kael';
+    c.clan = ('' + (m.clan || '')).slice(0, 8);
+    if (saves[c.name]) send(c, { t:'save', save:saves[c.name] });   // restaura el progreso de la cuenta
+    const others = []; for (const o of clients.values()){ if (o.id !== c.id) others.push(pub(o)); }
+    send(c, { t:'welcome', id:c.id, players:others });
+    broadcast({ t:'joined', player:pub(c) }, c.id);
+    console.log('[+] jugador ' + c.id + ' (' + c.name + '/' + c.hero + ') — total ' + clients.size);
+  } else if (m.t === 'save'){
+    if (c.name && m.save && typeof m.save === 'object'){ saves[c.name] = m.save; if (m.save.clan != null) c.clan = ('' + m.save.clan).slice(0, 8); persistSaves(); }
+  } else if (m.t === 'state'){
+    c.x = m.x; c.y = m.y; c.z = m.z; c.ry = m.ry; c.nation = m.nation; c.anim = m.anim;
+    broadcast({ t:'state', id:c.id, x:m.x, y:m.y, z:m.z, ry:m.ry, anim:m.anim }, c.id);
+  } else if (m.t === 'chat'){
+    broadcast({ t:'chat', id:c.id, name:c.name, clan:c.clan||'', text:('' + (m.text || '')).slice(0, 120) });
+  } else if (m.t === 'party'){
+    if (m.a === 'invite'){ const t = clients.get(m.to); if (t) send(t, { t:'party', a:'invite', from:c.id, name:c.name }); }
+    else if (m.a === 'accept'){
+      const inv = clients.get(m.to); if (!inv) return;
+      let pid = inv.party; if (!pid){ pid = nextParty++; parties.set(pid, new Set([inv.id])); inv.party = pid; }
+      parties.get(pid).add(c.id); c.party = pid;
+      toParty(pid, { t:'party', a:'members', list:partyList(pid) });
+    }
+    else if (m.a === 'leave'){ leaveParty(c); }
+    else if (m.a === 'xp'){ const set = c.party && parties.get(c.party); if (set) for (const id of set){ if (id !== c.id){ const cc = clients.get(id); if (cc) send(cc, { t:'party', a:'xp', amount:m.amount }); } } }
+  } else if (m.t === 'clan'){
+    c.clan = ('' + (m.clan || '')).slice(0, 8);
+    broadcast({ t:'clan', id:c.id, clan:c.clan }, c.id);   // anuncia el clan sin reconectar (evita el spam de "entró")
+  }
+}
 
 // ping de mantenimiento: descarta conexiones muertas
 const heartbeat = setInterval(() => {
-  wss.clients.forEach(ws => {
-    if (ws.isAlive === false) return ws.terminate();
-    ws.isAlive = false; ws.ping();
-  });
+  for (const c of clients.values()){
+    if (c.alive === false){ try { c.socket.destroy(); } catch(e){} continue; }
+    c.alive = false; try { c.socket.write(frame(null, 0x9)); } catch(e){}
+  }
 }, 30000);
-wss.on('close', () => clearInterval(heartbeat));
+httpServer.on('close', () => clearInterval(heartbeat));
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`Elemental Legacy sirviendo en http://${HOST}:${PORT} (web + multijugador WS)`);
+  console.log('Elemental Legacy sirviendo en http://' + HOST + ':' + PORT + ' (web + multijugador WS, sin dependencias)');
 });

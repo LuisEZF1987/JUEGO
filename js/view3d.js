@@ -24,6 +24,9 @@ const View3D = (function(){
   let camYaw = Math.PI, camPitch = 0.4, camDist = 8;
   let raycaster, ndc, groundPlane, aimPoint, reticle;
   let hud = null;
+  // estado de carga de modelos glTF (riggeados). Si falla, se usa el
+  // constructor de cajas (hero3d.js) como fallback para no romper el juego.
+  let modelsReady = false, modelsTried = false, gltfOK = false, pendingChar = null;
 
   const ENEMY_REGEN = 16;
   const U = 0.03;  // factor px(2D) -> unidades(3D)
@@ -32,9 +35,27 @@ const View3D = (function(){
   function init(canvas, char){
     THREE = window.THREE;
     if (!renderer) create(canvas);
-    setHero(char);
+    pendingChar = char;
+    if (modelsReady){ finishInit(); return; }
+    if (modelsTried){ showLoading(null); return; }   // ya cargando
+    modelsTried = true;
+    showLoading(0);
+    if (!window.HeroGLTF){ console.warn('[view3d] HeroGLTF no cargado; usando cajas.'); gltfOK = false; modelsReady = true; finishInit(); return; }
+    window.HeroGLTF.preloadHeroModels(THREE, p => showLoading(p))
+      .then(() => { gltfOK = true; })
+      .catch(err => { console.warn('[view3d] Falló la precarga glTF; usando cajas:', err); gltfOK = false; })
+      .then(() => { modelsReady = true; finishInit(); });
+  }
+  function finishInit(){
+    if (!pendingChar) return;
+    setHero(pendingChar);
     if (!enemy) spawnEnemy('Tierra');
     start();
+  }
+  function showLoading(pct){
+    if (!hudEl) return;
+    const txt = (pct == null) ? 'Cargando modelos 3D…' : ('Cargando modelos 3D… ' + pct + '%');
+    hudEl.innerHTML = '<div class="h3-loading">' + txt + '</div>';
   }
 
   function create(canvas){
@@ -45,7 +66,7 @@ const View3D = (function(){
     renderer.setSize(canvas.width, canvas.height, false);
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputEncoding = THREE.sRGBEncoding;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.98;
 
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(52, canvas.width / canvas.height, 0.1, 500);
@@ -82,7 +103,7 @@ const View3D = (function(){
     composer = new THREE.EffectComposer(renderer);
     composer.setSize(canvas.width, canvas.height);
     composer.addPass(new THREE.RenderPass(scene, camera));
-    bloom = new THREE.UnrealBloomPass(new THREE.Vector2(canvas.width, canvas.height), 0.75, 0.55, 0.62);
+    bloom = new THREE.UnrealBloomPass(new THREE.Vector2(canvas.width, canvas.height), 0.5, 0.55, 0.85);
     composer.addPass(bloom);
 
     // apuntado con el ratón: raycaster sobre el suelo + retículo
@@ -99,9 +120,14 @@ const View3D = (function(){
 
   // ---------------- combatientes ----------------
   function makeFighter(char, faction){
+    let model = null, group;
+    if (gltfOK && window.HeroGLTF){
+      try { model = window.HeroGLTF.buildHeroGLTF(THREE, char); group = model.group; }
+      catch(e){ console.warn('[view3d] buildHeroGLTF falló; cajas para', char.id, e); model = null; }
+    }
+    if (!group) group = buildHero3D(THREE, char);   // fallback de cajas
     const f = {
-      char, faction,
-      group: buildHero3D(THREE, char),
+      char, faction, group, model,
       maxHp: char.stats.maxHp, hp: char.stats.maxHp,
       maxChakra: char.stats.maxChakra, chakra: char.stats.maxChakra,
       element: char.element,
@@ -109,13 +135,16 @@ const View3D = (function(){
       facing: 0, targetFacing: 0, vy: 0, walkPhase: 0, basicCd: 0,
       dead: false, respawn: 0, hitFlash: 0,
     };
-    f.parts = f.group.userData.parts;
-    f.headBaseY = f.parts.head.userData.baseY;
-    f.group.traverse(o => { if (o.isMesh){ o.castShadow = true; o.receiveShadow = true; } });
+    if (!model){                                    // sólo el modelo de cajas tiene `parts`
+      f.parts = f.group.userData.parts;
+      f.headBaseY = f.parts.head.userData.baseY;
+    }
+    f.group.traverse(o => { if (o.isMesh || o.isSkinnedMesh){ o.castShadow = true; o.receiveShadow = true; } });
     return f;
   }
   function setHero(char){
-    if (player){ scene.remove(player.group); }
+    if (!modelsReady){ pendingChar = char; return; }   // aún cargando: se aplicará al terminar
+    if (player){ if (player.model) player.model.dispose(); scene.remove(player.group); }
     player = makeFighter(char, 'player');
     player.group.position.set(0, 0, 0); player.group.rotation.y = 0;
     scene.add(player.group);
@@ -136,6 +165,7 @@ const View3D = (function(){
     i = (i + dir + ELEMENT_RING.length) % ELEMENT_RING.length;
     const el = ELEMENT_RING[i];
     const p = enemy.group.position.clone();
+    if (enemy.model) enemy.model.dispose();
     scene.remove(enemy.group);
     const def = JSON.parse(JSON.stringify(DUMMY_DEF)); def.element = el; def.skills[0].element = el;
     const keep = { hp:enemy.hp, dead:enemy.dead };
@@ -218,6 +248,7 @@ const View3D = (function(){
     else { const d = dirTo(caster, player); aim = { x:d.x, z:d.z }; }
     caster.targetFacing = Math.atan2(aim.x, aim.z);
     caster.swing = 0.35;
+    if (caster.model) caster.model.playOnce('attack');
 
     if (sk.dash){
       const dd = sk.dash.distance * U;
@@ -335,11 +366,13 @@ const View3D = (function(){
   function die(f){
     f.dead = true; f.hp = 0; f.status = {};
     spawnText(f.group.position, f.faction==='player' ? '¡Derrotado!' : '¡Sellado!', '#ffce54', 1.4);
-    f.group.visible = false; f.respawn = f.faction==='player' ? 3 : 2;
+    if (!f.model) f.group.visible = false;   // el modelo glTF reproduce la animación de muerte
+    f.respawn = f.faction==='player' ? 3 : 2;
   }
   function respawnFighter(f){
     f.dead = false; f.hp = f.maxHp; f.chakra = f.maxChakra; f.status = {}; f.group.visible = true;
     f.group.position.set(0, 0, f.faction==='player' ? 0 : 9);
+    if (f.model) f.model.revive();
   }
 
   // ---------------- bucle ----------------
@@ -361,7 +394,7 @@ const View3D = (function(){
   }
 
   function updateFighter(f, dt, isPlayer){
-    if (f.dead){ f.respawn -= dt; if (f.respawn <= 0) respawnFighter(f); return; }
+    if (f.dead){ if (f.model) f.model.update(dt, { dead:true }); f.respawn -= dt; if (f.respawn <= 0) respawnFighter(f); return; }
     for (const k in f.cooldowns) f.cooldowns[k] = Math.max(0, f.cooldowns[k] - dt);
     if (f.maxChakra > 0) f.chakra = Math.min(f.maxChakra, f.chakra + 12*dt);
     if (f.hitFlash > 0) f.hitFlash -= dt;
@@ -388,10 +421,19 @@ const View3D = (function(){
     // salto
     f.vy -= 16*dt; f.group.position.y += f.vy*dt; if (f.group.position.y < 0){ f.group.position.y = 0; f.vy = 0; }
     // animación
-    if (f.swing > 0){ f.swing -= dt*2; f.parts.rArm.rotation.x = -1.2 + (0.35-f.swing)*3; }
-    else { if (moving) f.walkPhase += dt*9; const sw = moving ? Math.sin(f.walkPhase)*0.6 : Math.sin(performance.now()*0.002)*0.05;
-      f.parts.lLeg.rotation.x=sw; f.parts.rLeg.rotation.x=-sw; f.parts.lArm.rotation.x=-sw*0.8-0.15; f.parts.rArm.rotation.x=sw*0.8-0.3;
-      f.parts.head.position.y = f.headBaseY + (moving?Math.abs(Math.sin(f.walkPhase))*0.04:0); }
+    if (f.model){
+      // modelo riggeado: deriva la velocidad real (sirve para jugador y enemigo)
+      const sp = (f._px !== undefined) ? Math.hypot(f.group.position.x - f._px, f.group.position.z - f._pz) / Math.max(dt, 1e-4) : 0;
+      f._px = f.group.position.x; f._pz = f.group.position.z;
+      const airborne = f.group.position.y > 0.06;
+      f.model.update(dt, { moving: sp > 0.4, running: sp > 5.5, airborne, dead:false });
+    } else {
+      // modelo de cajas (fallback): animación procedural de miembros
+      if (f.swing > 0){ f.swing -= dt*2; f.parts.rArm.rotation.x = -1.2 + (0.35-f.swing)*3; }
+      else { if (moving) f.walkPhase += dt*9; const sw = moving ? Math.sin(f.walkPhase)*0.6 : Math.sin(performance.now()*0.002)*0.05;
+        f.parts.lLeg.rotation.x=sw; f.parts.rLeg.rotation.x=-sw; f.parts.lArm.rotation.x=-sw*0.8-0.15; f.parts.rArm.rotation.x=sw*0.8-0.3;
+        f.parts.head.position.y = f.headBaseY + (moving?Math.abs(Math.sin(f.walkPhase))*0.04:0); }
+    }
   }
 
   function tickStatus(f, dt){
@@ -408,7 +450,7 @@ const View3D = (function(){
     const d = dirTo(e, p);
     e.targetFacing = Math.atan2(d.x, d.z);
     if (!e.status.stun && !e.status.root && d.dist > 2.6){ const sp = 2.6 * (e.status.slow?(1-e.status.slow.amt):1); e.group.position.x += d.x*sp*dt; e.group.position.z += d.z*sp*dt; }
-    if (!e.status.stun && d.dist <= 3 && e.basicCd <= 0 && !p.dead){ e.swing = 0.35; hit(e, p, e.element, e.char.skills[0].offense.mult, 'fisico', e.char.skills[0].offense.effects||[]); e.basicCd = 1.6; }
+    if (!e.status.stun && d.dist <= 3 && e.basicCd <= 0 && !p.dead){ e.swing = 0.35; if (e.model) e.model.playOnce('attack'); hit(e, p, e.element, e.char.skills[0].offense.mult, 'fisico', e.char.skills[0].offense.effects||[]); e.basicCd = 1.6; }
   }
 
   function updateProjectiles(dt){

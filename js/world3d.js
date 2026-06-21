@@ -1,7 +1,7 @@
 // ====================================================================
 //  world3d.js — Mundo 3D explorable MULTIJUGADOR.
 //  - 6 Naciones dispuestas alrededor de una plaza central.
-//  - Acertijos como cristales colocados en cada Nación (pulsa E para resolver).
+//  - Bestias y Jefes (Dioses Encadenados) que cazar en cada Nación (clic para atacar).
 //  - Otros jugadores conectados se ven moverse en tiempo real (vía net.js).
 // ====================================================================
 
@@ -10,28 +10,80 @@ const World3D = (function(){
   let canvasEl, ground, sky, embers;
   let player = null;                 // jugador local
   const remote = new Map();          // id -> jugador remoto
-  let nations = [], crystals = [];
+  let nations = [];
   const keys = new Set();
-  let dragging = false, lastX = 0, lastY = 0;
+  let dragging = false, lastX = 0, lastY = 0, moved = 0;
   let camYaw = Math.PI, camPitch = 0.42, camDist = 9;
-  let stateTimer = 0, nearCrystal = null, myName = '', curNation = 'Centro';
+  let stateTimer = 0, myName = '', curNation = 'Centro';
   let hud = null, statusTxt = 'Conectando…', playerCount = 1, toastT = 0;
+  // combate del Mundo
+  let raycaster = null, ndc = null, lockedMob = null, lockRing = null, atkTimer = 0;
+  let projectiles = [], strikes = [], rings = [], zones = [], worldTexts = [];
+  // forja / inventario
+  let forge = { weapon:0, armor:0, amulet:0 }, panelEl = null, panelOpen = false;
+  let clan = '', chatEl = null, chatInput = null, chatLines = [];   // clan + caja de chat
+  let myParty = [], pendingInvite = null;                          // grupo (party)
+  // carga de modelos glTF (KayKit). Si falla, se usa el constructor de cajas.
+  let modelsReady = false, modelsTried = false, gltfOK = false, pendingChar = null;
+  let level = 1, xp = 0;             // progreso del jugador (compartido entre héroes, persistido)
 
   function init(canvas, char){
     THREE = window.THREE;
+    loadProgress(); loadForge(); clan = (localStorage.getItem('el_clan')||'').slice(0,8);
     if (!renderer) create(canvas);
-    setLocalHero(char);
-    connectNet(char);
+    pendingChar = char;
+    if (modelsReady){ finishInit(); return; }
+    if (modelsTried) return;                 // ya cargando
+    modelsTried = true;
+    if (hud) hud.innerHTML = '<div class="h3-loading">Cargando mundo 3D…</div>';
+    if (!window.HeroGLTF){ gltfOK = false; modelsReady = true; finishInit(); return; }
+    window.HeroGLTF.preloadHeroModels(THREE, ()=>{})
+      .then(()=>{ gltfOK = true; }).catch(err => { console.warn('[world3d] glTF preload falló; cajas:', err); gltfOK = false; })
+      .then(()=>{ modelsReady = true; finishInit(); });
+  }
+  function finishInit(){
+    if (!pendingChar) return;
+    syncAccount();
+    buildHUD();
+    setLocalHero(pendingChar);
+    connectNet(pendingChar);
     start();
   }
-  function setHero(char){ setLocalHero(char); reconnect(char); }
+  // ---- persistencia por personaje (Account) ----
+  function syncAccount(){
+    if (!(window.Account && Account.active)) return;
+    const c = Account.active(); if (!c) return;
+    level = c.level || 1; xp = c.xp || 0;
+    forge = c.forge || (c.forge = { weapon:0, armor:0, amulet:0 });
+    if (typeof c.clan === 'string') clan = c.clan;
+    if (window.Mobs && Mobs.bindLoot) Mobs.bindLoot(c);   // oro/bajas/materiales por personaje
+  }
+  function saveAccount(){
+    if (window.Account && Account.active){
+      const c = Account.active(); if (c){ c.level = level; c.xp = xp; if (typeof clan === 'string') c.clan = clan; c.updated = Date.now(); }
+      if (Account.save) Account.save();
+    } else { saveProgress(); saveForge(); }
+  }
+  function setHero(char){ if (!modelsReady){ pendingChar = char; return; } setLocalHero(char); reconnect(char); }
+
+  // ---------------- progreso (XP / niveles) ----------------
+  const PROGRESS_KEY = 'el_progress_v1';
+  function loadProgress(){ try{ const r = JSON.parse(localStorage.getItem(PROGRESS_KEY)); if (r){ level = r.level||1; xp = r.xp||0; } }catch(e){} }
+  function saveProgress(){ try{ localStorage.setItem(PROGRESS_KEY, JSON.stringify({ level, xp })); }catch(e){} }
+  function xpNeeded(lv){ return Math.round(50 * Math.pow(lv, 1.6)); }   // XP para subir del nivel `lv` al siguiente
+  function gainXP(amount){
+    xp += amount; let up = false;
+    while (xp >= xpNeeded(level)){ xp -= xpNeeded(level); level++; up = true; }
+    if (up) toast('⭐ ¡Subiste a Nivel ' + level + '!  (+12% daño por nivel)');
+    saveAccount(); pushSave();
+  }
 
   function create(canvas){
     canvasEl = canvas;
     renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
     renderer.setPixelRatio(1); renderer.setSize(canvas.width, canvas.height, false);
     renderer.outputEncoding = THREE.sRGBEncoding;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
 
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(52, canvas.width/canvas.height, 0.1, 600);
@@ -62,10 +114,22 @@ const World3D = (function(){
     composer = new THREE.EffectComposer(renderer);
     composer.setSize(canvas.width, canvas.height);
     composer.addPass(new THREE.RenderPass(scene, camera));
-    composer.addPass(new THREE.UnrealBloomPass(new THREE.Vector2(canvas.width, canvas.height), 0.7, 0.5, 0.55));
+    composer.addPass(new THREE.UnrealBloomPass(new THREE.Vector2(canvas.width, canvas.height), 0.5, 0.5, 0.85));
 
     hud = document.getElementById('worldhud');
     buildHUD();
+    // poblado (casas/árboles) + criaturas/jefes a cazar
+    if (window.Mobs){
+      Mobs.buildEnvironment(THREE, scene, nations);
+      Mobs.preload(THREE).then(() => Mobs.populate(THREE, scene, nations));
+    }
+    // apuntado (raycaster) + anillo del objetivo fijado
+    raycaster = new THREE.Raycaster();
+    ndc = new THREE.Vector2();
+    lockRing = new THREE.Mesh(new THREE.RingGeometry(1.0, 1.25, 30), new THREE.MeshBasicMaterial({ color:0xff5a5a, transparent:true, opacity:0.85, side:THREE.DoubleSide }));
+    lockRing.rotation.x = -Math.PI/2; lockRing.visible = false; lockRing.renderOrder = 2; scene.add(lockRing);
+    canvasEl.addEventListener('contextmenu', e => e.preventDefault());
+    panelEl = document.getElementById('world-panel');
     bindInput();
   }
 
@@ -74,8 +138,6 @@ const World3D = (function(){
     plaza.rotation.x = -Math.PI/2; plaza.position.y = 0.02; scene.add(plaza);
 
     nations = CHARACTERS.map((c, i) => { const ang = (i/CHARACTERS.length)*Math.PI*2; const R = 30; return { name:c.nation, element:c.element, heroId:c.id, x:Math.cos(ang)*R, z:Math.sin(ang)*R }; });
-    const byNation = nations.map(() => []);
-    PUZZLES.forEach((p, i) => byNation[i % nations.length].push(p));
 
     nations.forEach((n, idx) => {
       const t = NATION_THEME[n.element], acc = new THREE.Color(t.accent);
@@ -88,47 +150,166 @@ const World3D = (function(){
       for (let k=0;k<6;k++){ const a=Math.random()*Math.PI*2, r=6+Math.random()*7, h=1+Math.random()*3.5;
         const cone = new THREE.Mesh(new THREE.ConeGeometry(0.6+Math.random()*0.7, h, 6), new THREE.MeshStandardMaterial({ color:new THREE.Color(t.ground).multiplyScalar(1.4), roughness:0.92 }));
         cone.position.set(n.x+Math.cos(a)*r, h/2, n.z+Math.sin(a)*r); cone.rotation.y=Math.random()*Math.PI; scene.add(cone); }
-      const ps = byNation[idx];
-      ps.forEach((p, j) => {
-        const a = (j/Math.max(1,ps.length))*Math.PI*2, r = 7.5, cx = n.x+Math.cos(a)*r, cz = n.z+Math.sin(a)*r;
-        const mat = new THREE.MeshStandardMaterial({ color:acc.clone(), emissive:acc.clone(), emissiveIntensity:1.4, roughness:0.3 });
-        const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.7), mat); mesh.position.set(cx, 1.4, cz);
-        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.7, 0.4, 8), new THREE.MeshStandardMaterial({ color:0x20242f, roughness:0.85 }));
-        base.position.set(cx, 0.2, cz);
-        scene.add(mesh); scene.add(base);
-        crystals.push({ mesh, mat, puzzleId:p.id, title:p.title, nation:n.name, x:cx, z:cz, solved:false, acc:acc.clone() });
-      });
     });
   }
 
+  // construye un combatiente (jugador o remoto) con modelo glTF si está
+  // disponible, o el constructor de cajas como fallback.
+  function buildFighter(char){
+    let model = null, g;
+    if (gltfOK && window.HeroGLTF){
+      try { model = window.HeroGLTF.buildHeroGLTF(THREE, char); g = model.group; }
+      catch(e){ console.warn('[world3d] buildHeroGLTF falló; cajas para', char.id, e); model = null; }
+    }
+    if (!g) g = buildHero3D(THREE, char);
+    g.traverse(o => { if (o.isMesh || o.isSkinnedMesh){ o.castShadow = true; o.receiveShadow = true; } });
+    const f = { group:g, model };
+    if (!model){ f.parts = g.userData.parts; f.headBaseY = g.userData.parts.head.userData.baseY; f.walkPhase = 0; }
+    return f;
+  }
   function setLocalHero(char){
-    if (player) scene.remove(player.group);
-    const g = buildHero3D(THREE, char);
-    player = { group:g, parts:g.userData.parts, headBaseY:g.userData.parts.head.userData.baseY, hero:char.id, targetFacing:Math.PI, walkPhase:0 };
-    g.position.set(0, 0, 6); g.rotation.y = Math.PI; scene.add(g);
+    if (player){ if (player.model) player.model.dispose(); scene.remove(player.group); }
+    const f = buildFighter(char);
+    const fb = forgeBonus();
+    const maxHp = Math.round(char.stats.maxHp * (1 + (level-1)*0.08)) + fb.hp;   // sube con el nivel y la armadura
+    const maxChakra = (char.stats.maxChakra||100) + fb.chakra;
+    player = Object.assign({
+      hero:char.id, targetFacing:Math.PI,
+      maxHp, hp:maxHp, maxChakra, chakra:maxChakra,
+      cooldowns:{}, cdTotal:{}, buff:null, buffDef:null, shield:0, dead:false, respawn:0, hitFlash:0,
+    }, f);
+    lockedMob = null;
+    const sp = spawnPoint(); player.targetFacing = sp.ry;
+    f.group.position.set(sp.x, 0, sp.z); f.group.rotation.y = sp.ry; scene.add(f.group);
+    buildSkillBar(); updateGearVisual();
   }
 
   // ---------------- red ----------------
   function connectNet(char){
-    myName = (localStorage.getItem('mp_name') || '').trim() || (char.name + '-' + Math.floor(Math.random()*900+100));
+    myName = (window.Account && Account.name && Account.active && Account.active()) ? Account.name() : (localStorage.getItem('mp_name') || '').trim();
+    if (!myName){ myName = char.name + '-' + Math.floor(Math.random()*9000+1000); try{ localStorage.setItem('mp_name', myName); }catch(e){} }
     statusTxt = 'Conectando…'; playerCount = 1;
-    Net.connect(myName, char.id, {
-      welcome:(m)=>{ statusTxt='Conectado'; playerCount = 1 + (m.players?m.players.length:0); (m.players||[]).forEach(addRemote); },
-      join:(p)=>{ addRemote(p); playerCount++; toast(p.name + ' entró al mundo'); },
+    Net.connect(myName, char.id, clan, {
+      welcome:(m)=>{ statusTxt='Conectado'; playerCount = 1 + (m.players?m.players.length:0); (m.players||[]).forEach(addRemote); pushSave(); },
+      join:(p)=>{ addRemote(p); playerCount++; chatLog('➕ ' + plabel(p) + ' entró al mundo'); },
       state:(m)=>{ const r=remote.get(m.id); if (r){ r.tx=m.x; r.tz=m.z; r.try=m.ry; r.moving=(m.anim==='walk'); } },
-      leave:(id)=>{ const r=remote.get(id); if (r){ scene.remove(r.group); scene.remove(r.nameSprite); remote.delete(id); playerCount=Math.max(1,playerCount-1); } },
-      solve:(m)=>{ toast((m.name||'Alguien') + ' resolvió un acertijo'); },
+      leave:(id)=>{ const r=remote.get(id); if (r){ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); remote.delete(id); playerCount=Math.max(1,playerCount-1); } },
+      chat:(m)=>{ chatLog('💬 ' + plabel(m) + ': ' + m.text); },   // [clan] nombre: texto
+      party:(m)=>{ onParty(m); },
+      clan:(m)=>{ const r = remote.get(m.id); if (r){ r.clan = m.clan; refreshNameplate(r); } },
+      save:(m)=>{ applyServerSave(m.save); },   // Fase 6: sync de cuenta desde el servidor (gana el más reciente)
       close:()=>{ statusTxt='Desconectado'; },
       error:()=>{ statusTxt='Sin conexión'; },
     });
   }
-  function reconnect(char){ Net.disconnect(); remote.forEach(r=>{ scene.remove(r.group); scene.remove(r.nameSprite); }); remote.clear(); connectNet(char); }
+  function reconnect(char){ Net.disconnect(); remote.forEach(r=>{ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); }); remote.clear(); connectNet(char); }
   function addRemote(p){
     if (remote.has(p.id)) return;
     const ch = CHARACTERS.find(c => c.id === p.hero) || CHARACTERS[0];
-    const g = buildHero3D(THREE, ch); g.position.set(p.x||0, 0, p.z||0); g.rotation.y = p.ry||0; scene.add(g);
-    const nameSprite = makeTextSprite(p.name || ('J'+p.id), '#cde3ff', null); nameSprite.scale.set(3.2, 0.8, 1); nameSprite.position.set(g.position.x, 3.4, g.position.z); scene.add(nameSprite);
-    remote.set(p.id, { group:g, parts:g.userData.parts, headBaseY:g.userData.parts.head.userData.baseY, hero:p.hero, tx:p.x||0, tz:p.z||0, try:p.ry||0, walkPhase:0, nameSprite, moving:false });
+    const f = buildFighter(ch);
+    f.group.position.set(p.x||0, 0, p.z||0); f.group.rotation.y = p.ry||0; scene.add(f.group);
+    const nameSprite = makeTextSprite(plabel(p), p.clan?'#ffe08a':'#cde3ff', null); nameSprite.scale.set(3.6, 0.9, 1); nameSprite.position.set(f.group.position.x, 3.4, f.group.position.z); scene.add(nameSprite);
+    remote.set(p.id, Object.assign({ id:p.id, name:p.name, clan:p.clan, hero:p.hero, tx:p.x||0, tz:p.z||0, try:p.ry||0, nameSprite, moving:false }, f));
+  }
+  // re-genera la placa de nombre de un jugador remoto (al cambiar de clan, sin reconectar)
+  function refreshNameplate(r){
+    if (!r || !r.group) return;
+    if (r.nameSprite){ scene.remove(r.nameSprite); const mt = r.nameSprite.material; if (mt){ if (mt.map) mt.map.dispose(); mt.dispose(); } }
+    const s = makeTextSprite(plabel(r), r.clan ? '#ffe08a' : '#cde3ff', null);
+    s.scale.set(3.6, 0.9, 1); s.position.set(r.group.position.x, 3.4, r.group.position.z); scene.add(s); r.nameSprite = s;
+  }
+
+  // ---------------- grupo (party) ----------------
+  function onParty(m){
+    if (m.a === 'invite'){ pendingInvite = { from:m.from, name:m.name }; toast('🎉 ' + (m.name||'Alguien') + ' te invitó a un grupo · pulsa P para aceptar'); }
+    else if (m.a === 'members'){ myParty = m.list || []; pendingInvite = null; updatePartyHUD(); chatLog(myParty.length > 1 ? ('👥 Grupo: ' + myParty.map(p=>p.name).join(', ')) : '👥 Grupo deshecho'); }
+    else if (m.a === 'xp'){ if (typeof m.amount === 'number') gainXP(m.amount); }
+  }
+  function nearestRemote(){
+    if (!player) return null; let best = null, bd = Infinity;
+    remote.forEach((r, id) => { const dx = r.group.position.x - player.group.position.x, dz = r.group.position.z - player.group.position.z, d = dx*dx + dz*dz; if (d < bd){ bd = d; best = { id, name:r.name }; } });
+    return best;
+  }
+  function partyKey(){
+    const online = window.Net && Net.connected && Net.connected();
+    if (!online){ toast('El grupo necesita estar conectado al servidor'); return; }
+    if (pendingInvite){ Net.send({ t:'party', a:'accept', to:pendingInvite.from }); toast('✅ Te uniste al grupo'); pendingInvite = null; }
+    else { const r = nearestRemote(); if (r){ Net.send({ t:'party', a:'invite', to:r.id }); toast('📨 Invitación de grupo enviada a ' + (r.name||'jugador')); } else toast('No hay otro jugador cerca para invitar'); }
+  }
+  function updatePartyHUD(){
+    if (!hud || !hud._party) return;
+    if (myParty && myParty.length > 1){
+      hud._party.innerHTML = '👥 ' + myParty.map(p=>esc(p.name)).join(' · ') + ' <button class="w-party-x" id="w-party-x" title="Salir del grupo">✕ salir</button>';
+      const x = document.getElementById('w-party-x'); if (x) x.onclick = leavePartyNow;
+    } else hud._party.innerHTML = '';
+  }
+  function leavePartyNow(){
+    if (!(myParty && myParty.length > 1)) return;
+    if (window.Net && Net.connected && Net.connected()) Net.send({ t:'party', a:'leave' });
+    myParty = []; updatePartyHUD(); toast('👋 Saliste del grupo');
+  }
+
+  // ---------------- cuenta (guardado en servidor) + chat + clan ----------------
+  function plabel(p){ return (p && p.clan ? '['+p.clan+'] ' : '') + ((p && p.name) || 'Jugador'); }
+  function esc(s){ return ('' + s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function gatherSave(){
+    const L = (window.Mobs && Mobs.getLoot) ? Mobs.getLoot() : { gold:0, kills:0, mats:{} };
+    const c = (window.Account && Account.active) ? Account.active() : null;
+    return { level, xp, forge:{ weapon:forge.weapon, armor:forge.armor, amulet:forge.amulet }, clan, gold:L.gold, kills:L.kills, mats:L.mats, ts:(c && c.updated) || 0 };
+  }
+  function pushSave(){ if (window.Net && Net.connected && Net.connected()) Net.send({ t:'save', save:gatherSave() }); }
+  // Fase 6: el servidor es la copia de la cuenta entre dispositivos. Aplica su save
+  // SOLO si es más reciente (timestamp) que el local; si no, el local manda.
+  function applyServerSave(s){
+    if (!s || typeof s !== 'object') return;
+    const c = (window.Account && Account.active) ? Account.active() : null;
+    if (c && typeof s.ts === 'number' && typeof c.updated === 'number' && s.ts <= c.updated) return;  // local más nuevo: no pisar
+    if (typeof s.level === 'number') level = Math.max(1, s.level);
+    if (typeof s.xp === 'number') xp = Math.max(0, s.xp);
+    if (s.forge){ forge.weapon = s.forge.weapon||0; forge.armor = s.forge.armor||0; forge.amulet = s.forge.amulet||0; }
+    if (s.clan != null){ clan = ('' + s.clan).slice(0,8); try{ localStorage.setItem('el_clan', clan); }catch(e){} }
+    if (c){
+      c.level = level; c.xp = xp; c.clan = clan; c.forge = forge;
+      if (s.gold != null) c.gold = s.gold;
+      if (s.kills != null) c.kills = s.kills;
+      if (s.mats) c.mats = s.mats;
+      c.updated = s.ts || Date.now();
+      if (window.Mobs && Mobs.bindLoot) Mobs.bindLoot(c);
+      if (Account.save) Account.save();
+    } else {
+      if (window.Mobs && Mobs.setLoot && (s.gold != null || s.mats)) Mobs.setLoot({ gold:s.gold||0, kills:s.kills||0, mats:s.mats||{} });
+      saveProgress(); saveForge();
+    }
+    recomputeVitals(); updateGearVisual();
+    if (panelOpen) buildPanel();
+    toast('☁ Cuenta sincronizada desde el servidor · Nv ' + level);
+  }
+  function setClan(v){
+    clan = ('' + (v||'')).replace(/[^\w]/g,'').slice(0,8);
+    try{ localStorage.setItem('el_clan', clan); }catch(e){}
+    pushSave();
+    if (window.Net && Net.connected && Net.connected()) Net.send({ t:'clan', clan:clan });   // re-anuncia sin reconectar (no spamea "entró")
+    toast(clan ? ('🛡 Clan: [' + clan + ']') : 'Clan quitado');
+  }
+  function chatLog(line){
+    chatLines.push(line); if (chatLines.length > 7) chatLines.shift();
+    if (chatEl) chatEl.innerHTML = chatLines.map(l => '<div>' + esc(l) + '</div>').join('');
+  }
+  function sendChat(text){
+    text = ('' + text).trim().slice(0, 120); if (!text) return;
+    if (window.Net && Net.connected && Net.connected()) Net.send({ t:'chat', text:text });   // el servidor me lo reenvía → eco único
+    else chatLog('💬 ' + (clan ? '['+clan+'] ' : '') + myName + ': ' + text);                  // sin servidor: eco local
+  }
+  function chatting(){ return chatInput && document.activeElement === chatInput; }
+  // aura visible que crece con la Forja (dorada al alcanzar equipo divino)
+  function updateGearVisual(){
+    if (!player || !player.model || !player.model.aura || !THREE) return;
+    const total = forge.weapon + forge.armor + forge.amulet;
+    player.model.aura.intensity = 0.5 + total * 0.16;
+    const divine = forge.weapon > 10 || forge.armor > 10 || forge.amulet > 10;
+    const ch = heroDef();
+    const col = divine ? 0xffd86b : (ch && ELEMENT_META[ch.element] ? new THREE.Color(ELEMENT_META[ch.element].color).getHex() : 0xffffff);
+    player.model.aura.color = new THREE.Color(col);
   }
 
   // ---------------- entrada ----------------
@@ -140,35 +321,323 @@ const World3D = (function(){
   function onKey(e){
     if (!active) return;
     const k = e.key.toLowerCase(); keys.add(k);
-    if (k === 'e' && nearCrystal && !modalOpen() && window.GameUI){ window.GameUI.openPuzzle(nearCrystal.puzzleId); }
-    if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) e.preventDefault();
+    if (k === 'enter'){ if (chatInput){ chatInput.focus(); e.preventDefault(); } return; }   // abrir chat
+    if (k === 'i'){ togglePanel(); }
+    else if (k === 'escape'){ if (panelOpen) togglePanel(); else lockedMob = null; }
+    else if (player && !player.dead && !panelOpen){
+      if (k === '1') castSkill(0); else if (k === '2') castSkill(1);
+      else if (k === '3') castSkill(2); else if (k === '4') castSkill(3);
+      else if (k === 'tab'){ cycleLock(); }
+      else if (k === 'p'){ partyKey(); }
+    }
+    if (['arrowup','arrowdown','arrowleft','arrowright',' ','tab'].includes(k)) e.preventDefault();
   }
   function onKeyUp(e){ keys.delete(e.key.toLowerCase()); }
-  function onDown(e){ if (!active || e.button!==0) return; dragging=true; lastX=e.clientX; lastY=e.clientY; }
-  function onMove(e){ if (!dragging || !active) return; camYaw -= (e.clientX-lastX)*0.006; camPitch=Math.max(0.1,Math.min(1.1,camPitch+(e.clientY-lastY)*0.005)); lastX=e.clientX; lastY=e.clientY; }
-  function onUp(){ dragging=false; }
+  function onDown(e){ if (!active || e.button!==0) return; dragging=true; lastX=e.clientX; lastY=e.clientY; moved=0; }
+  function onMove(e){
+    if (ndc && canvasEl){ const r = canvasEl.getBoundingClientRect(); ndc.x = ((e.clientX-r.left)/r.width)*2-1; ndc.y = -((e.clientY-r.top)/r.height)*2+1; }
+    if (!dragging || !active) return;
+    const dx=e.clientX-lastX, dy=e.clientY-lastY; moved+=Math.abs(dx)+Math.abs(dy);
+    camYaw -= dx*0.006; camPitch=Math.max(0.1,Math.min(1.1,camPitch+dy*0.005)); lastX=e.clientX; lastY=e.clientY;
+  }
+  function onUp(){ if (active && dragging && moved < 7 && player && !player.dead && !panelOpen){ const m = pickMobAtCursor(); lockedMob = m || null; } dragging=false; }
+  function pickMobAtCursor(){
+    if (!raycaster || !ndc || !window.Mobs || !Mobs.pick) return null;
+    raycaster.setFromCamera(ndc, camera); return Mobs.pick(raycaster);
+  }
+
+  // ---------------- combate del Mundo ----------------
+  const WU = 0.03;   // factor: rangos de las skills (px) -> unidades del mundo
+  function heroDef(){ return CHARACTERS.find(c => c.id === player.hero); }
+  // fija/cicla el objetivo más cercano dentro de un buen rango (estilo L2)
+  function cycleLock(){
+    if (!window.Mobs || !Mobs.targetsNear) return;
+    const list = Mobs.targetsNear(player.group.position, 35);
+    if (!list.length) return;
+    if (!lockedMob || lockedMob.dead || list.indexOf(lockedMob) < 0){ lockedMob = list[0]; return; }
+    lockedMob = list[(list.indexOf(lockedMob) + 1) % list.length];   // cicla al siguiente
+  }
+  // aparición inicial: al borde de la 1ª Nación (para tener combate cerca)
+  function spawnPoint(){
+    const n = (nations && nations.length) ? nations[0] : { x:0, z:0 };
+    const x = n.x - 9, z = n.z;
+    return { x, z, ry: Math.atan2(n.x - x, n.z - z) };
+  }
+  function aimDir(){
+    if (lockedMob && !lockedMob.dead){ const dx=lockedMob.group.position.x-player.group.position.x, dz=lockedMob.group.position.z-player.group.position.z, d=Math.hypot(dx,dz)||1; return { x:dx/d, z:dz/d }; }
+    return { x:Math.sin(player.group.rotation.y), z:Math.cos(player.group.rotation.y) };
+  }
+  // ataque básico automático contra el objetivo fijado (estilo L2)
+  function updateAutoAttack(dt){
+    if (player.dead || !lockedMob || lockedMob.dead) return;
+    const dx = lockedMob.group.position.x - player.group.position.x, dz = lockedMob.group.position.z - player.group.position.z, d = Math.hypot(dx,dz);
+    if (d <= (lockedMob.isBoss ? 4.6 : 3.2)){
+      player.targetFacing = Math.atan2(dx, dz);
+      atkTimer -= dt;
+      if (atkTimer <= 0){ const ch = heroDef(); atkTimer = 1 / ((ch && ch.stats.attackSpeed) || 1); basicHit(lockedMob); }
+    }
+  }
+  function basicHit(m){
+    const ch = heroDef();
+    let dmg = ((ch ? ch.stats.power : 15) + forgeBonus().power) * 0.7 * (1 + (level-1)*0.12);
+    if (player.buff) dmg *= (1 + player.buff.amt);
+    if (player.model) player.model.playOnce('attack');
+    Mobs.damageMob(m, dmg, { element: ch ? ch.element : null });
+  }
+  function castSkill(i){
+    const ch = heroDef(); if (!ch) return;
+    const sk = ch.skills[i]; if (!sk) return;
+    if ((player.cooldowns[sk.key]||0) > 0) return;
+    if (player.chakra < (sk.cost||0)){ toast('Sin Chakra'); return; }
+    player.chakra -= (sk.cost||0);
+    let cd = sk.cooldown; if (i === 0) cd /= (ch.stats.attackSpeed||1);
+    player.cooldowns[sk.key] = cd; player.cdTotal[sk.key] = cd;
+    if ((sk.cost||0) === 0) player.chakra = Math.min(player.maxChakra, player.chakra + 5);
+    executeWorldSkill(sk, ch);
+  }
+  function executeWorldSkill(sk, ch){
+    const el = sk.element || ch.element;
+    const aim = aimDir();
+    player.targetFacing = Math.atan2(aim.x, aim.z);
+    if (player.model) player.model.playOnce('attack');
+    const power = (ch.stats.power + forgeBonus().power) * (player.buff ? (1 + player.buff.amt) : 1);
+    if (sk.dash){ const dd = sk.dash.distance * WU; player.group.position.x += aim.x*dd; player.group.position.z += aim.z*dd; spawnRing(player.group.position, 1.4, '#ffffff'); }
+    if (sk.offense){
+      const o = sk.offense, dmg = power * (o.mult||1);
+      if (o.shape === 'projectile' || o.shape === 'line'){
+        spawnProjectile(aim, el, dmg, o);
+      } else if (o.shape === 'nuke'){
+        const tp = (lockedMob && !lockedMob.dead) ? lockedMob.group.position.clone() : new THREE.Vector3(player.group.position.x+aim.x*8, 0, player.group.position.z+aim.z*8);
+        spawnStrike(tp, (o.radius||150)*WU, el, dmg, o, o.delay||0.6);
+      } else {
+        const r = ((o.shape === 'melee' ? (o.range||80) : (o.radius||100)) * WU) + 1.0;
+        const cx = (o.shape === 'circle') ? player.group.position.x : player.group.position.x + aim.x*r*0.5;
+        const cz = (o.shape === 'circle') ? player.group.position.z : player.group.position.z + aim.z*r*0.5;
+        spawnRing({ x:cx, z:cz }, r, ELEMENT_META[el].glow);
+        for (const m of Mobs.mobsInRadius({ x:cx, z:cz }, r)){
+          if (o.shape === 'cone'){ const dx=m.group.position.x-player.group.position.x, dz=m.group.position.z-player.group.position.z, dd=Math.hypot(dx,dz)||1; if ((dx/dd*aim.x + dz/dd*aim.z) < 0.2) continue; }
+          Mobs.damageMob(m, dmg, { element:el, effects:o.effects||[], from:player.group.position });
+        }
+      }
+    }
+    if (sk.self) applySelfWorld(sk.self, ch);
+    if (sk.zone) spawnZoneWorld(sk.zone, ch, aim);
+  }
+  function applySelfWorld(list, ch){
+    for (const s of list){
+      if (s.kind === 'heal'){ const a = s.amount * (ch.stats.healPower||1); player.hp = Math.min(player.maxHp, player.hp + a); floatWorldText(player.group.position, '+'+Math.round(a), '#7CFF6B'); if (ch.passive && ch.passive.id === 'savia_sello') player.shield = (player.shield||0) + a*0.3; }
+      else if (s.kind === 'shield'){ player.shield = (player.shield||0) + s.amount; floatWorldText(player.group.position, '🛡 escudo', '#9fd0ff'); }
+      else if (s.kind === 'buffDamage'){ player.buff = { amt:s.amt, t:s.dur }; floatWorldText(player.group.position, '⬆ furia', '#ff9a3c'); }
+      else if (s.kind === 'defense'){ player.buffDef = { amt:s.amt, t:s.dur }; }
+    }
+  }
+  function spawnProjectile(aim, el, dmg, o){
+    const m = new THREE.Mesh(new THREE.SphereGeometry(o.width ? o.width*WU*1.2 : 0.3, 10, 10), new THREE.MeshStandardMaterial({ color:ELEMENT_META[el].color, emissive:ELEMENT_META[el].glow, emissiveIntensity:1.2 }));
+    m.position.set(player.group.position.x + aim.x*0.8, 1.2, player.group.position.z + aim.z*0.8); scene.add(m);
+    projectiles.push({ mesh:m, dx:aim.x, dz:aim.z, speed:(o.speed||540)*WU*1.1, range:(o.range||500)*WU, traveled:0, el, dmg, effects:o.effects||[], pierce:!!o.pierce, hit:new Set() });
+  }
+  function spawnStrike(pos, r, el, dmg, o, delay){
+    const m = new THREE.Mesh(new THREE.RingGeometry(r*0.85, r, 28), new THREE.MeshBasicMaterial({ color:ELEMENT_META[el].glow, transparent:true, opacity:0.5, side:THREE.DoubleSide }));
+    m.position.set(pos.x, 0.06, pos.z); m.rotation.x = -Math.PI/2; scene.add(m);
+    strikes.push({ mesh:m, t:delay, r, el, dmg, effects:o.effects||[], pos:new THREE.Vector3(pos.x, 0, pos.z) });
+  }
+  function spawnRing(p, r, color){
+    const m = new THREE.Mesh(new THREE.TorusGeometry(r, 0.12, 8, 24), new THREE.MeshBasicMaterial({ color, transparent:true }));
+    m.position.set(p.x, 0.3, p.z); m.rotation.x = -Math.PI/2; scene.add(m);
+    rings.push({ mesh:m, t:0.35, maxT:0.35 });
+  }
+  function spawnZoneWorld(z, ch, aim){
+    let px = player.group.position.x, pz = player.group.position.z;
+    if (z.placement === 'mouse'){ if (lockedMob && !lockedMob.dead){ px = lockedMob.group.position.x; pz = lockedMob.group.position.z; } else { px += aim.x*6; pz += aim.z*6; } }
+    const r = (z.radius||100)*WU + 0.6;
+    const m = new THREE.Mesh(new THREE.CircleGeometry(r, 28), new THREE.MeshBasicMaterial({ color:ELEMENT_META[z.element].color, transparent:true, opacity:0.22, side:THREE.DoubleSide }));
+    m.rotation.x = -Math.PI/2; m.position.set(px, 0.05, pz); scene.add(m);
+    zones.push({ mesh:m, t:z.dur, interval:z.interval||0.5, acc:0, el:z.element, perTick:z.perTick||0, healPerTick:z.healPerTick||0, chakraPerTick:z.chakraPerTick||0, radius:r, follow:z.placement==='follow' });
+  }
+  function floatWorldText(pos, text, color){
+    const sp = makeTextSprite(text, color, null); sp.scale.set(2.4, 0.6, 1); sp.position.set(pos.x, (pos.y||0)+2.8, pos.z); scene.add(sp); worldTexts.push({ sp, t:1, vy:1.4 });
+  }
+  // recibir daño / muerte / respawn
+  function damagePlayer(amount){
+    if (player.dead) return;
+    let d = amount * (1 - forgeBonus().reduce);   // la armadura de la Forja reduce el daño
+    if (player.buffDef) d *= (1 - player.buffDef.amt);
+    if (player.shield > 0){ const ab = Math.min(player.shield, d); player.shield -= ab; d -= ab; }
+    player.hp -= d; player.hitFlash = 0.15;
+    floatWorldText(player.group.position, '-'+Math.round(amount), '#ff7b7b');
+    if (player.hp <= 0){ player.hp = 0; killPlayer(); }
+  }
+  function killPlayer(){ player.dead = true; player.respawn = 4; lockedMob = null; if (panelOpen) togglePanel(); toast('💀 Has caído. Reapareces en la plaza…'); }
+  function respawnPlayer(){
+    player.dead = false; player.hp = player.maxHp; player.chakra = player.maxChakra; player.shield = 0; player.buff = null; player.buffDef = null;
+    player.group.position.set(0,0,6); player.targetFacing = Math.PI;
+    if (player.model) player.model.revive();
+  }
+  // actualizaciones de combate por frame
+  function updateProjectiles(dt){
+    for (const p of projectiles){
+      p.mesh.position.x += p.dx*p.speed*dt; p.mesh.position.z += p.dz*p.speed*dt; p.traveled += p.speed*dt;
+      for (const m of Mobs.mobsInRadius(p.mesh.position, 1.3)){ if (!p.hit.has(m)){ p.hit.add(m); Mobs.damageMob(m, p.dmg, { element:p.el, effects:p.effects, from:p.mesh.position }); if (!p.pierce){ p.done = true; break; } } }
+      if (p.traveled >= p.range) p.done = true;
+    }
+    projectiles = projectiles.filter(p => { if (p.done){ scene.remove(p.mesh); return false; } return true; });
+  }
+  function updateStrikes(dt){
+    for (const s of strikes){ s.t -= dt; s.mesh.material.opacity = 0.3 + 0.4*Math.abs(Math.sin(s.t*12));
+      if (s.t <= 0){ for (const m of Mobs.mobsInRadius(s.pos, s.r)) Mobs.damageMob(m, s.dmg, { element:s.el, effects:s.effects, from:s.pos }); spawnRing(s.pos, s.r, ELEMENT_META[s.el].glow); s.done = true; } }
+    strikes = strikes.filter(s => { if (s.done){ scene.remove(s.mesh); return false; } return true; });
+  }
+  function updateRings(dt){
+    for (const r of rings){ r.t -= dt; const k = 1 + (1 - r.t/r.maxT)*0.6; r.mesh.scale.set(k,k,k); r.mesh.material.opacity = Math.max(0, r.t/r.maxT); }
+    rings = rings.filter(r => { if (r.t<=0){ scene.remove(r.mesh); return false; } return true; });
+  }
+  function updateZonesWorld(dt){
+    for (const z of zones){
+      if (z.follow){ z.mesh.position.x = player.group.position.x; z.mesh.position.z = player.group.position.z; }
+      z.t -= dt; z.acc += dt; z.mesh.material.opacity = 0.1 + 0.12*Math.max(0, z.t/3);
+      while (z.acc >= z.interval){ z.acc -= z.interval;
+        if (z.perTick > 0){ for (const m of Mobs.mobsInRadius(z.mesh.position, z.radius)) Mobs.damageMob(m, z.perTick, { element:z.el }); }
+        if (z.healPerTick > 0 && !player.dead) player.hp = Math.min(player.maxHp, player.hp + z.healPerTick);
+        if (z.chakraPerTick > 0 && !player.dead) player.chakra = Math.min(player.maxChakra, player.chakra + z.chakraPerTick);
+      }
+    }
+    zones = zones.filter(z => { if (z.t<=0){ scene.remove(z.mesh); return false; } return true; });
+  }
+  function updateWorldTexts(dt){
+    for (const t of worldTexts){ t.t -= dt; t.sp.position.y += t.vy*dt; t.sp.material.opacity = Math.max(0, t.t); }
+    worldTexts = worldTexts.filter(t => { if (t.t<=0){ scene.remove(t.sp); return false; } return true; });
+  }
+  function updateLock(){
+    if (lockedMob && lockedMob.dead) lockedMob = null;
+    if (lockedMob && lockRing){ lockRing.visible = true; const s = lockedMob.isBoss ? 2.4 : 1.0; lockRing.scale.set(s,s,s); lockRing.position.set(lockedMob.group.position.x, 0.08, lockedMob.group.position.z); }
+    else if (lockRing) lockRing.visible = false;
+  }
+  // recompensa de XP por cada presa abatida (de cualquier fuente: básico, skill, quemadura)
+  function drainKills(){
+    if (!window.Mobs || !Mobs.takeKills) return;
+    for (const k of Mobs.takeKills()){
+      const got = k.isBoss ? 250 : 15;
+      toast('☠ ' + k.name + '  ·  +' + k.gold + ' oro  ·  +' + got + ' XP' + (k.mat ? '  ·  🎁 ' + k.mat : ''));
+      gainXP(got);
+      // XP compartida: los miembros del grupo reciben la mitad
+      if (myParty && myParty.length > 1 && window.Net && Net.connected && Net.connected()) Net.send({ t:'party', a:'xp', amount: Math.round(got*0.5) });
+      if (k.isBoss && Net.connected()) Net.send({ t:'chat', text:'¡abatió al Dios ' + k.name + '!' });
+    }
+  }
+
+  // ---------------- Forja & inventario ----------------
+  const FORGE_KEY = 'el_forge_v1';
+  const FORGE_MAX = 15;
+  const FORGE = {
+    weapon: { name:'Arma',     icon:'⚔️', mat:'Lingote de Hierro',      stat:'+4 daño/nivel (+9 divino)' },
+    armor:  { name:'Armadura', icon:'🛡️', mat:'Madera de Roble',        stat:'+25 vida/nivel +2% def (más divino)' },
+    amulet: { name:'Amuleto',  icon:'📿', mat:'Cristal de Refinamiento', stat:'+10 chakra/nivel (+22 divino)' },
+  };
+  function loadForge(){ try{ const r = JSON.parse(localStorage.getItem(FORGE_KEY)); if (r){ forge.weapon=r.weapon||0; forge.armor=r.armor||0; forge.amulet=r.amulet||0; } }catch(e){} }
+  function saveForge(){ try{ localStorage.setItem(FORGE_KEY, JSON.stringify(forge)); }catch(e){} }
+  function forgeBonus(){
+    const norm = lv => Math.min(10, lv), div = lv => Math.max(0, lv-10);
+    return {
+      power:  norm(forge.weapon)*4  + div(forge.weapon)*9,
+      hp:     norm(forge.armor)*25  + div(forge.armor)*55,
+      reduce: Math.min(0.55, norm(forge.armor)*0.02 + div(forge.armor)*0.03),
+      chakra: norm(forge.amulet)*10 + div(forge.amulet)*22,
+    };
+  }
+  // costo de la próxima mejora; niveles 11-15 son "divinos" y usan materiales de Jefe (cualquiera de los 6).
+  function upgradeCost(slot){
+    const lv = forge[slot];
+    if (lv < 10) return { divine:false, gold:(lv+1)*30, mat:FORGE[slot].mat, need:lv+1 };
+    return { divine:true, gold:(lv+1)*120, mat:'Material de Jefe', need:lv-9 };
+  }
+  function canAfford(cost){
+    if (!cost) return false;
+    const L = (window.Mobs && Mobs.getLoot) ? Mobs.getLoot() : { gold:0, mats:{} };
+    if (L.gold < cost.gold) return false;
+    if (cost.divine) return (window.Mobs && Mobs.bossMatCount ? Mobs.bossMatCount() : 0) >= cost.need;
+    return (L.mats[cost.mat]||0) >= cost.need;
+  }
+  function recomputeVitals(){
+    if (!player) return; const ch = heroDef(); if (!ch) return; const fb = forgeBonus();
+    player.maxHp = Math.round(ch.stats.maxHp*(1+(level-1)*0.08)) + fb.hp;
+    player.maxChakra = (ch.stats.maxChakra||100) + fb.chakra;
+    player.hp = Math.min(player.hp, player.maxHp); player.chakra = Math.min(player.chakra, player.maxChakra);
+  }
+  function togglePanel(){ if (!panelEl) return; panelOpen = panelEl.hidden; panelEl.hidden = !panelOpen; if (panelOpen) buildPanel(); }
+  function buildPanel(){
+    if (!panelEl) return;
+    const L = (window.Mobs && Mobs.getLoot) ? Mobs.getLoot() : { gold:0, mats:{}, kills:0 };
+    const matKeys = Object.keys(L.mats||{});
+    const matHtml = matKeys.length ? matKeys.map(k => { const it = window.ITEMS ? ITEMS.meta(k) : { icon:'📦', color:'#9aa3b2', tier:'Material' }; return '<div class="wp-tile" style="--mc:'+it.color+'" title="'+esc(k)+' · '+it.tier+'"><span class="wp-tic">'+it.icon+'</span><span class="wp-tq">'+L.mats[k]+'</span><span class="wp-tn">'+esc(k)+'</span><span class="wp-tt">'+it.tier+'</span></div>'; }).join('') : '<span class="wp-empty">— aún no tienes materiales · caza bestias y Jefes —</span>';
+    const rows = ['weapon','armor','amulet'].map(slot => {
+      const cfg = FORGE[slot], lv = forge[slot], maxed = lv >= FORGE_MAX, cost = maxed ? null : upgradeCost(slot);
+      const can = !maxed && canAfford(cost);
+      const tag = lv > 10 ? ' <span class="wp-div">✦ divino</span>' : '';
+      return '<div class="wp-row">'
+        + '<div class="wp-slot"><span class="wp-ic">'+cfg.icon+'</span><div><b>'+cfg.name+' +'+lv+'</b>'+tag+'<br><small>'+cfg.stat+'</small></div></div>'
+        + (maxed ? '<div class="wp-max">MÁX</div>'
+                 : '<button class="wp-up'+(can?'':' off')+(cost.divine?' div':'')+'" data-slot="'+slot+'">⬆ +'+(lv+1)+'<br><small>'+cost.need+'× '+esc(cost.mat)+' · 💰'+cost.gold+'</small></button>')
+        + '</div>';
+    }).join('');
+    const clanRow = '<div class="wp-clan"><label>🛡 Clan</label><input id="wp-clan" maxlength="8" value="'+esc(clan)+'" placeholder="(sin clan)"><button id="wp-clan-save">Fijar</button></div>';
+    panelEl.innerHTML = '<div class="wp-card">'
+      + '<div class="wp-head"><h3>🔨 Forja &amp; Inventario</h3><button class="wp-x" id="wp-close">✕</button></div>'
+      + '<div class="wp-gold">💰 '+ L.gold +' oro · ☠ '+ (L.kills||0) +' bajas · 👤 '+esc(myName||'')+'</div>'
+      + '<div class="wp-section">Materiales</div><div class="wp-mats">'+matHtml+'</div>'
+      + '<div class="wp-section">Equipo</div><div class="wp-rows">'+rows+'</div>'
+      + '<div class="wp-section">Clan</div>'+clanRow
+      + '<div class="wp-foot">Niveles 11-15 son <b>divinos</b> (materiales de Jefe). Pulsa <b>I</b> para cerrar.</div></div>';
+    const close = panelEl.querySelector('#wp-close'); if (close) close.onclick = togglePanel;
+    panelEl.querySelectorAll('.wp-up').forEach(b => b.onclick = () => upgrade(b.dataset.slot));
+    const cs = panelEl.querySelector('#wp-clan-save'); if (cs) cs.onclick = () => setClan(panelEl.querySelector('#wp-clan').value);
+  }
+  function upgrade(slot){
+    const cfg = FORGE[slot]; if (forge[slot] >= FORGE_MAX) return;
+    const cost = upgradeCost(slot);
+    if (!window.Mobs || !canAfford(cost)){ toast('No te alcanza para mejorar tu '+cfg.name); buildPanel(); return; }
+    if (cost.divine){ Mobs.spend({}, cost.gold); Mobs.spendBoss(cost.need); }
+    else { Mobs.spend({ [cost.mat]: cost.need }, cost.gold); }
+    forge[slot]++; saveAccount(); recomputeVitals(); updateGearVisual(); pushSave();
+    toast('🔨 '+cfg.name+' mejorada a +'+forge[slot] + (forge[slot] > 10 ? ' ✦ divino' : ''));
+    buildPanel();
+  }
   function onWheel(e){ if (!active) return; e.preventDefault(); camDist=Math.max(5,Math.min(16,camDist+(e.deltaY>0?0.8:-0.8))); }
-  function modalOpen(){ const el=document.getElementById('puzzle-modal'); return el && !el.hidden; }
+  function modalOpen(){ return false; }   // ya no hay modales que bloqueen el mundo
 
   // ---------------- bucle ----------------
   function start(){ if (active) return; active=true; last=performance.now(); raf=requestAnimationFrame(loop); }
-  function stop(){ active=false; cancelAnimationFrame(raf); keys.clear(); dragging=false; Net.disconnect(); remote.forEach(r=>{ scene.remove(r.group); scene.remove(r.nameSprite); }); remote.clear(); }
+  function stop(){ active=false; cancelAnimationFrame(raf); keys.clear(); dragging=false; if (panelEl){ panelEl.hidden = true; panelOpen = false; } Net.disconnect(); remote.forEach(r=>{ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); }); remote.clear(); }
   function loop(now){ if (!active) return; let dt=(now-last)/1000; last=now; dt=Math.min(0.05,dt); update(dt); composer.render(); raf=requestAnimationFrame(loop); }
 
   function update(dt){
-    const blocked = modalOpen();
-    let moving = false;
-    if (!blocked){
-      let mx=0,mz=0; const fwd={x:-Math.sin(camYaw),z:-Math.cos(camYaw)}, right={x:Math.cos(camYaw),z:-Math.sin(camYaw)};
-      if (keys.has('w')||keys.has('arrowup')){ mx+=fwd.x; mz+=fwd.z; }
-      if (keys.has('s')||keys.has('arrowdown')){ mx-=fwd.x; mz-=fwd.z; }
-      if (keys.has('d')||keys.has('arrowright')){ mx+=right.x; mz+=right.z; }
-      if (keys.has('a')||keys.has('arrowleft')){ mx-=right.x; mz-=right.z; }
-      if (mx||mz){ const d=Math.hypot(mx,mz); mx/=d; mz/=d; const sp=keys.has('shift')?9:4.6; player.group.position.x+=mx*sp*dt; player.group.position.z+=mz*sp*dt; player.targetFacing=Math.atan2(mx,mz); moving=true; }
+    // cooldowns, chakra, buffs temporales, flash
+    for (const k in player.cooldowns) player.cooldowns[k] = Math.max(0, player.cooldowns[k] - dt);
+    if (!player.dead) player.chakra = Math.min(player.maxChakra, player.chakra + 12*dt);
+    if (player.buff){ player.buff.t -= dt; if (player.buff.t <= 0) player.buff = null; }
+    if (player.buffDef){ player.buffDef.t -= dt; if (player.buffDef.t <= 0) player.buffDef = null; }
+    if (player.hitFlash > 0) player.hitFlash -= dt;
+
+    // muerte / respawn del jugador
+    if (player.dead){
+      if (player.model) player.model.update(dt, { dead:true });
+      player.respawn -= dt; if (player.respawn <= 0) respawnPlayer();
     }
-    const R=60; player.group.position.x=Math.max(-R,Math.min(R,player.group.position.x)); player.group.position.z=Math.max(-R,Math.min(R,player.group.position.z));
-    player.group.rotation.y = lerpAngle(player.group.rotation.y, player.targetFacing, 0.2);
-    animateFigure(player, dt, moving);
+
+    let moving = false;
+    if (!player.dead){
+      if (!panelOpen){
+        let mx=0,mz=0; const fwd={x:-Math.sin(camYaw),z:-Math.cos(camYaw)}, right={x:Math.cos(camYaw),z:-Math.sin(camYaw)};
+        if (keys.has('w')||keys.has('arrowup')){ mx+=fwd.x; mz+=fwd.z; }
+        if (keys.has('s')||keys.has('arrowdown')){ mx-=fwd.x; mz-=fwd.z; }
+        if (keys.has('d')||keys.has('arrowright')){ mx+=right.x; mz+=right.z; }
+        if (keys.has('a')||keys.has('arrowleft')){ mx-=right.x; mz-=right.z; }
+        if (mx||mz){ const d=Math.hypot(mx,mz); mx/=d; mz/=d; const sp=keys.has('shift')?9:4.6; player.group.position.x+=mx*sp*dt; player.group.position.z+=mz*sp*dt; player.targetFacing=Math.atan2(mx,mz); moving=true; }
+        const R=60; player.group.position.x=Math.max(-R,Math.min(R,player.group.position.x)); player.group.position.z=Math.max(-R,Math.min(R,player.group.position.z));
+        updateAutoAttack(dt);
+      }
+      player.group.rotation.y = lerpAngle(player.group.rotation.y, player.targetFacing, 0.2);
+      animateFighter(player, dt, moving);
+    }
 
     // jugadores remotos
     remote.forEach(r => {
@@ -176,23 +645,21 @@ const World3D = (function(){
       r.group.position.x+=dx*k; r.group.position.z+=dz*k;
       r.group.rotation.y = lerpAngle(r.group.rotation.y, r.try, 0.2);
       r.nameSprite.position.set(r.group.position.x, 3.4, r.group.position.z);
-      animateFigure(r, dt, r.moving || (Math.hypot(dx,dz) > 0.03));
+      animateFighter(r, dt, r.moving || (Math.hypot(dx,dz) > 0.03));
     });
 
     // enviar mi estado ~10/s
     stateTimer -= dt;
     if (stateTimer <= 0 && Net.connected()){ stateTimer = 0.1; Net.send({ t:'state', x:player.group.position.x, y:0, z:player.group.position.z, ry:player.group.rotation.y, nation:curNation, anim:moving?'walk':'idle' }); }
 
-    // Nación actual + cristales
+    // Nación actual
     curNation = 'Centro'; let bestN = 15*15;
     for (const n of nations){ const d=(n.x-player.group.position.x)**2+(n.z-player.group.position.z)**2; if (d<bestN){ bestN=d; curNation=n.name; } }
-    nearCrystal = null; let best = 3*3;
-    for (const cr of crystals){
-      cr.mesh.rotation.y += dt*1.3; cr.mesh.position.y = 1.4 + Math.sin(performance.now()*0.002 + cr.x)*0.18;
-      const solved = !!(window.GameUI && window.GameUI.isSolved && window.GameUI.isSolved(cr.puzzleId));
-      if (solved !== cr.solved){ cr.solved = solved; const col = solved ? new THREE.Color(0x4ad06a) : cr.acc; cr.mat.color.copy(col); cr.mat.emissive.copy(col); if (solved && Net.connected()) Net.send({ t:'solve', puzzle:cr.puzzleId }); }
-      const d=(cr.x-player.group.position.x)**2+(cr.z-player.group.position.z)**2; if (d<best){ best=d; nearCrystal=cr; }
-    }
+
+    // combate: efectos + bestias (que contraatacan) + XP por presas
+    updateProjectiles(dt); updateStrikes(dt); updateRings(dt); updateZonesWorld(dt); updateWorldTexts(dt); updateLock();
+    if (window.Mobs){ const taken = Mobs.update(dt, player.group.position) || 0; if (taken > 0 && !player.dead) damagePlayer(taken); }
+    drainKills();
 
     updateCamera(dt);
     const arr = embers.geometry.attributes.position.array;
@@ -209,6 +676,16 @@ const World3D = (function(){
     camera.lookAt(tx,ty,tz);
   }
 
+  // anima un combatiente: mixer glTF (idle/caminar/correr) o, si es de cajas, el procedural.
+  function animateFighter(f, dt, movingHint){
+    if (f.model){
+      const sp = (f._px !== undefined) ? Math.hypot(f.group.position.x - f._px, f.group.position.z - f._pz) / Math.max(dt, 1e-4) : 0;
+      f._px = f.group.position.x; f._pz = f.group.position.z;
+      f.model.update(dt, { moving: sp > 0.4 || movingHint, running: sp > 5.5, airborne:false, dead:false });
+    } else {
+      animateFigure(f, dt, movingHint);
+    }
+  }
   function animateFigure(f, dt, moving){
     if (moving) f.walkPhase += dt*9;
     const sw = moving ? Math.sin(f.walkPhase)*0.6 : Math.sin(performance.now()*0.002)*0.05;
@@ -221,11 +698,41 @@ const World3D = (function(){
   function buildHUD(){
     if (!hud) return;
     hud.innerHTML = '<div class="w-top"><span class="dot" id="w-dot"></span> <span id="w-status"></span> · <span id="w-count"></span> 👥 · 📍 <span id="w-nation"></span></div>'
+      + '<div class="w-level"><span id="w-lvl">Nv 1</span><div class="w-xpbar"><i id="w-xp"></i></div></div>'
+      + '<div class="w-party" id="w-party"></div>'
+      + '<div class="w-loot" id="w-loot"></div>'
+      + '<div class="w-target" id="w-target"></div>'
       + '<div class="w-toast" id="w-toast"></div>'
       + '<div class="w-prompt" id="w-prompt"></div>'
-      + '<div class="w-hint"><b>WASD</b> moverte · arrastrar ratón = cámara · <b>E</b> = resolver acertijo cercano</div>';
+      + '<div class="w-vitals"><div class="w-name" id="w-pname"></div>'
+      + '<div class="w-hpbar"><i id="w-hp"></i><span class="w-hptxt" id="w-hptxt"></span></div>'
+      + '<div class="w-ckbar"><i id="w-ck"></i></div></div>'
+      + '<div class="w-skills" id="w-skills"></div>'
+      + '<div class="w-chat" id="w-chat"></div>'
+      + '<input id="w-chatin" class="w-chatin" maxlength="120" placeholder="Enter para chatear…" autocomplete="off">'
+      + '<div class="w-hint"><b>clic</b> objetivo · <b>1-4</b> skills · <b>WASD</b> · <b>I</b> forja · <b>Enter</b> chat · <b>P</b> grupo · <b>Tab</b> fijar</div>';
     hud._status=document.getElementById('w-status'); hud._count=document.getElementById('w-count'); hud._nation=document.getElementById('w-nation');
+    hud._party=document.getElementById('w-party');
     hud._toast=document.getElementById('w-toast'); hud._prompt=document.getElementById('w-prompt'); hud._dot=document.getElementById('w-dot');
+    hud._loot=document.getElementById('w-loot'); hud._target=document.getElementById('w-target');
+    hud._lvl=document.getElementById('w-lvl'); hud._xp=document.getElementById('w-xp');
+    hud._pname=document.getElementById('w-pname'); hud._hp=document.getElementById('w-hp'); hud._hptxt=document.getElementById('w-hptxt');
+    hud._ck=document.getElementById('w-ck'); hud._skills=document.getElementById('w-skills'); hud._slots=[];
+    chatEl=document.getElementById('w-chat'); chatInput=document.getElementById('w-chatin');
+    if (chatEl) chatEl.innerHTML = chatLines.map(l => '<div>' + esc(l) + '</div>').join('');
+    if (chatInput) chatInput.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter'){ sendChat(chatInput.value); chatInput.value=''; chatInput.blur(); }
+      else if (e.key === 'Escape'){ chatInput.value=''; chatInput.blur(); }
+    });
+    buildSkillBar();
+  }
+  function buildSkillBar(){
+    if (!hud || !hud._skills || !player) return;
+    const ch = heroDef(); if (!ch) return;
+    hud._skills.innerHTML = ch.skills.map(s => '<div class="w-slot"><span class="k">'+s.key+'</span><span class="nm">'+s.name+'</span><span class="cd"></span></div>').join('');
+    hud._slots = Array.prototype.slice.call(hud._skills.querySelectorAll('.w-slot'));
+    if (hud._pname) hud._pname.textContent = ch.name + ' · ' + ch.archetype.name;
   }
   function updateHUD(){
     if (!hud || !hud._status) return;
@@ -233,8 +740,26 @@ const World3D = (function(){
     hud._count.textContent = playerCount;
     hud._nation.textContent = curNation;
     hud._dot.style.background = Net.connected() ? '#5ad469' : '#ff7b7b';
-    hud._prompt.textContent = (nearCrystal && !modalOpen()) ? ('🧩 Pulsa E para resolver: ' + nearCrystal.title + (nearCrystal.solved ? ' (resuelto)' : '')) : '';
+    hud._prompt.textContent = '';
     hud._toast.style.opacity = toastT > 0 ? '1' : '0';
+    if (hud._lvl){ hud._lvl.textContent = 'Nv ' + level; }
+    if (hud._xp){ hud._xp.style.width = Math.min(100, Math.round(xp / xpNeeded(level) * 100)) + '%'; }
+    if (hud._loot && window.Mobs){ const L = Mobs.getLoot(); hud._loot.textContent = '💰 ' + L.gold + ' oro  ·  ☠ ' + L.kills + ' bajas'; }
+    // vida / chakra del jugador
+    if (hud._hp && player){ hud._hp.style.width = (Math.max(0, player.hp/player.maxHp)*100) + '%'; if (hud._hptxt) hud._hptxt.textContent = Math.ceil(Math.max(0,player.hp)) + ' / ' + player.maxHp; }
+    if (hud._ck && player){ hud._ck.style.width = (player.maxChakra ? player.chakra/player.maxChakra*100 : 0) + '%'; }
+    // skills (cooldown / chakra)
+    if (hud._slots && hud._slots.length && player){ const ch = heroDef(); if (ch) ch.skills.forEach((s, i) => {
+      const slot = hud._slots[i]; if (!slot) return;
+      const cd = player.cooldowns[s.key]||0, tot = player.cdTotal[s.key]||s.cooldown;
+      slot.classList.toggle('ready', cd<=0 && player.chakra>=(s.cost||0));
+      slot.classList.toggle('low', player.chakra<(s.cost||0));
+      const cdel = slot.querySelector('.cd'); cdel.textContent = cd>0?cd.toFixed(1):''; cdel.style.height = cd>0?(cd/tot*100)+'%':'0%';
+    }); }
+    // objetivo (fijado o más cercano)
+    if (hud._target && window.Mobs){ const m = (lockedMob && !lockedMob.dead) ? lockedMob : Mobs.getNearest();
+      if (m && !m.dead){ hud._target.style.display = 'block'; hud._target.innerHTML = ((lockedMob===m)?'🎯 ':'') + (m.isBoss?'☠ ':'🐾 ') + m.name + ' — ' + Math.max(0,Math.ceil(m.hp)) + ' / ' + m.maxHp; }
+      else hud._target.style.display = 'none'; }
   }
   function toast(msg){ if (hud && hud._toast){ hud._toast.textContent = msg; toastT = 3.2; } }
 

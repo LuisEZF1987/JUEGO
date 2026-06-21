@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Elemental Legacy — Prototipo</title>
 <link rel="stylesheet" href="css/style.css">
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">⚔️</text></svg>'>
 </head>
 <body>
 <div id="app">
@@ -14,59 +15,27 @@
     <div class="brand">Elemental Legacy <span>· The Broken Seal</span></div>
     <div class="tabs">
       <button class="tab active" data-screen="select-screen">⚔️ Héroes</button>
-      <button class="tab" data-screen="puzzle-screen">🧩 Acertijos</button>
-      <button class="tab" data-screen="vault-screen">🗝️ Bóveda</button>
-      <button class="tab" data-screen="nations-screen">🗺️ Naciones</button>
-      <button class="tab" data-screen="view3d-screen">🎮 Batalla 3D</button>
       <button class="tab" data-screen="world-screen">🌍 Mundo</button>
+      <button class="tab" data-screen="view3d-screen">🗡️ Arena</button>
     </div>
   </nav>
 
   <!-- ===== Selección de personaje ===== -->
   <section id="select-screen" class="screen">
     <header class="title">
-      <h1>Elige tu héroe</h1>
-      <p>Uno por Nación. Cada uno tiene un <b>arquetipo</b> (tanque, mago, asesina, sanadora…), un <b>Poder pasivo</b> y <b>4 skills</b>.</p>
+      <h1>Tus personajes</h1>
+      <p>Cada personaje guarda su propio <b>nivel</b>, <b>oro</b>, <b>materiales</b> y <b>forja</b>. Crea varios (uno por arquetipo/Nación) y entra al Mundo con el que quieras.</p>
     </header>
-    <div id="reliquia-bar"></div>
     <div id="char-grid"></div>
     <footer class="legend">
       Ciclo elemental: <b>Fuego ▸ Viento ▸ Rayo ▸ Tierra ▸ Agua ▸ Madera ▸ Fuego</b> — cada elemento hace +25 % al siguiente y −25 % al anterior.
     </footer>
   </section>
 
-  <!-- ===== Cámara de Acertijos ===== -->
-  <section id="puzzle-screen" class="screen" hidden>
-    <header class="title">
-      <h1>🧩 Cámara de Acertijos</h1>
-      <p>Pon a prueba tu inteligencia: <b>lógica</b>, <b>cálculo mental</b>, <b>geometría/física</b>, <b>memoria y oído</b>. Resuélvelos —algunos <b>en equipo</b>— y desbloquea materiales, equipo y <b>Reliquias</b> (poderes).</p>
-    </header>
-    <div id="puzzle-filters"></div>
-    <div id="puzzle-list"></div>
-  </section>
-
-  <!-- ===== Bóveda de recompensas ===== -->
-  <section id="vault-screen" class="screen" hidden>
-    <header class="title">
-      <h1>🗝️ Bóveda de Recompensas</h1>
-      <p>Todo lo que ganes resolviendo acertijos. Las <b>Reliquias</b> se equipan en la pantalla de Héroes.</p>
-    </header>
-    <div id="vault-grid"></div>
-  </section>
-
-  <!-- ===== Las 6 Naciones ===== -->
-  <section id="nations-screen" class="screen" hidden>
-    <header class="title">
-      <h1>🗺️ Las 6 Naciones</h1>
-      <p>Cada Nación encarna un elemento del anillo y es el hogar de un héroe. Entra a verla en 3D.</p>
-    </header>
-    <div id="nations-grid"></div>
-  </section>
-
-  <!-- ===== Vista 3D (tercera persona) ===== -->
+  <!-- ===== Arena (duelo 3D, tercera persona) ===== -->
   <section id="view3d-screen" class="screen" hidden>
     <header class="title">
-      <h1>🎮 Batalla 3D — Tercera persona</h1>
+      <h1>🗡️ Arena — Duelo en tercera persona</h1>
       <p>Elige tu héroe. <b>Apunta con el ratón</b> (verás un retículo en el suelo), ataca con <b>clic izquierdo</b> o <b>1</b>, usa skills <b>2·3·4</b>, muévete con <b>WASD</b>, salta con <b>Espacio</b>, arrastra para girar la cámara y cambia el elemento del rival con <b>Q/E</b>.</p>
     </header>
     <div id="hero3d-bar"></div>
@@ -81,38 +50,22 @@
   <section id="world-screen" class="screen" hidden>
     <header class="title">
       <h1>🌍 Mundo — Multijugador</h1>
-      <p>Explora las <b>6 Naciones</b> con otros jugadores conectados. Acércate a un <b>cristal de acertijo</b> y pulsa <b>E</b> para resolverlo. Muévete con <b>WASD</b> y gira la cámara arrastrando el ratón.</p>
+      <p>Explora las <b>6 Naciones</b> con otros jugadores conectados. <b>Caza bestias</b> y <b>Jefes</b> (Dioses Encadenados) para ganar <b>oro</b> y <b>XP</b>, y <b>subir de nivel</b>. Muévete con <b>WASD</b>, ataca con <b>clic</b> y gira la cámara arrastrando el ratón.</p>
     </header>
     <div id="world-hero-bar"></div>
     <div class="scene-wrap">
       <canvas id="worldcanvas" width="980" height="600"></canvas>
       <div id="worldhud" class="worldhud"></div>
+      <div id="world-panel" class="wpanel" hidden></div>
     </div>
   </section>
 
-  <!-- ===== Juego ===== -->
-  <section id="game-screen" class="screen" hidden>
-    <div class="topbar">
-      <button id="back-btn">‹ Cambiar personaje</button>
-      <span class="hint">Mover: <b>WASD</b>/Flechas · Apuntar: <b>ratón</b> · Skills: <b>1 2 3 4</b> · Básico: <b>clic izq.</b> · Elemento rival: <b>Q/E</b> · Salir: <b>Esc</b></span>
-    </div>
-    <canvas id="game" width="980" height="600"></canvas>
-  </section>
-
-  <!-- ===== Modal de acertijo ===== -->
-  <div id="puzzle-modal" class="modal" hidden>
-    <div class="modal-card" id="modal-card"></div>
-  </div>
 
 </div>
 
 <!-- Orden de carga (scripts clásicos: funciona con doble clic en index.html) -->
 <script src="js/elements.js"></script>
 <script src="js/characters.js"></script>
-<script src="js/entity.js"></script>
-<script src="js/combat.js"></script>
-<script src="js/game.js"></script>
-<script src="js/puzzles.js"></script>
 <script src="js/three.min.js"></script>
 <script src="js/lib/CopyShader.js"></script>
 <script src="js/lib/LuminosityHighPassShader.js"></script>
@@ -120,10 +73,16 @@
 <script src="js/lib/RenderPass.js"></script>
 <script src="js/lib/ShaderPass.js"></script>
 <script src="js/lib/UnrealBloomPass.js"></script>
+<script src="js/lib/GLTFLoader.js"></script>
+<script src="js/lib/SkeletonUtils.js"></script>
 <script src="js/hero3d.js"></script>
+<script src="js/herogltf.js"></script>
 <script src="js/view3d.js"></script>
 <script src="js/net.js"></script>
+<script src="js/mobs.js"></script>
+<script src="js/items.js"></script>
 <script src="js/world3d.js"></script>
+<script src="js/account.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>
