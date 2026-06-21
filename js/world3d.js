@@ -22,6 +22,7 @@ const World3D = (function(){
   let projectiles = [], strikes = [], rings = [], zones = [], worldTexts = [];
   // forja / inventario
   let forge = { weapon:0, armor:0, amulet:0 }, panelEl = null, panelOpen = false;
+  let marketEl = null, marketOpen = false, marketCatalog = [], marketReceipts = [], marketTab = 'buy';   // mercado
   let clan = '', chatEl = null, chatInput = null, chatLines = [];   // clan + caja de chat
   let pvpOn = false;   // PvP activable: solo atacas/recibes daño de jugadores si está ON (Tab los fija)
   let soulshots = false;   // Esquirlas de Combate: gastan oro por golpe a cambio de +daño (sumidero estilo L2)
@@ -139,6 +140,7 @@ const World3D = (function(){
     lockRing.rotation.x = -Math.PI/2; lockRing.visible = false; lockRing.renderOrder = 2; scene.add(lockRing);
     canvasEl.addEventListener('contextmenu', e => e.preventDefault());
     panelEl = document.getElementById('world-panel');
+    marketEl = document.getElementById('world-market');
     bindInput();
   }
 
@@ -211,9 +213,32 @@ const World3D = (function(){
       bosses:(m)=>{ (m.list||[]).forEach(b => serverBosses[b.el] = { hp:b.hp, maxHp:b.maxHp, dead:b.dead }); },
       bossdead:(m)=>{ onBossDead(m); },
       pvphit:(m)=>{ if (pvpOn && player && !player.dead) damagePlayer(m.dmg||0); },
+      authfail:(m)=>{ statusTxt='Nombre en uso'; toast('⚠ Ese nombre ya está en uso por otro jugador. Tu progreso no se cargó (identidad).'); },
+      marketCatalog:(m)=>{ marketCatalog = m.listings || []; renderMarket(); },
+      marketCreated:(m)=>{ applyMarketEconomy(null, m.mats); toast('✦ Publicado en el mercado'); Net.send({ t:'market:list' }); },
+      marketBought:(m)=>{ applyMarketEconomy(m.gold, m.mats); toast('🛒 Compraste ' + m.qty + '× ' + m.name + ' por ' + m.total + ' oro'); Net.send({ t:'market:list' }); },
+      marketSold:(m)=>{ if (m.gold != null) applyMarketEconomy(m.gold, null); toast('💰 Vendiste ' + m.qty + '× ' + m.name + ' por ' + m.total + ' oro'); },
+      marketCancelled:(m)=>{ applyMarketEconomy(null, m.mats); toast('Listado cancelado'); Net.send({ t:'market:list' }); },
+      marketReceipts:(m)=>{ const s = m.sales || []; if (s.length){ const tot = s.reduce((a,r)=>a+r.total,0); marketReceipts = s; toast('🧾 ' + s.length + ' venta(s) mientras no estabas: +' + tot + ' oro'); } },
+      marketErr:(m)=>{ toast('✗ Mercado: ' + (m.msg || m.code || 'error')); },
       close:()=>{ statusTxt='Desconectado'; if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(null); },
       error:()=>{ statusTxt='Sin conexión'; if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(null); },
-    });
+    }, (window.Account && Account.secret) ? Account.secret() : '');
+  }
+  // aplica oro/materiales autoritativos del mercado (directo, sin el guard de timestamp)
+  function applyMarketEconomy(gold, mats){
+    const c = (window.Account && Account.active) ? Account.active() : null;
+    if (c){
+      if (gold != null) c.gold = gold;
+      if (mats) c.mats = mats;
+      c.updated = Date.now();
+      if (window.Mobs && Mobs.bindLoot) Mobs.bindLoot(c);
+      if (Account.save) Account.save();
+    } else if (window.Mobs && Mobs.setLoot){
+      const L = Mobs.getLoot();
+      Mobs.setLoot({ gold: gold != null ? gold : L.gold, kills:L.kills, mats: mats || L.mats });
+    }
+    if (panelOpen) {}   // (forja) — el HUD de oro se refresca solo en updateHUD
   }
   function reconnect(char){ Net.disconnect(); remote.forEach(r=>{ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); }); remote.clear(); connectNet(char); }
   function addRemote(p){
@@ -401,7 +426,8 @@ const World3D = (function(){
     const k = e.key.toLowerCase(); keys.add(k);
     if (k === 'enter'){ if (document.exitPointerLock) document.exitPointerLock(); if (chatInput){ chatInput.focus(); e.preventDefault(); } return; }   // abrir chat (suelta la cámara)
     if (k === 'i'){ togglePanel(); }
-    else if (k === 'escape'){ if (pointerLocked && document.exitPointerLock) document.exitPointerLock(); else if (panelOpen) togglePanel(); else lockedMob = null; }
+    else if (k === 'm'){ toggleMarket(); }
+    else if (k === 'escape'){ if (pointerLocked && document.exitPointerLock) document.exitPointerLock(); else if (panelOpen) togglePanel(); else if (marketOpen) toggleMarket(); else lockedMob = null; }
     else if (player && !player.dead && !panelOpen){
       if (k === '1') castSkill(0); else if (k === '2') castSkill(1);
       else if (k === '3') castSkill(2); else if (k === '4') castSkill(3);
@@ -696,6 +722,51 @@ const World3D = (function(){
     player.maxChakra = (ch.stats.maxChakra||100) + fb.chakra;
     player.hp = Math.min(player.hp, player.maxHp); player.chakra = Math.min(player.chakra, player.maxChakra);
   }
+  // ---------------- Mercado / Casa de Subastas ----------------
+  function toggleMarket(){
+    if (!marketEl) return;
+    marketOpen = marketEl.hidden; marketEl.hidden = !marketOpen;
+    if (marketOpen){ if (document.exitPointerLock) document.exitPointerLock(); if (window.Net && Net.connected && Net.connected()) Net.send({ t:'market:list' }); renderMarket(); }
+  }
+  function mkMeta(k){ return window.ITEMS ? ITEMS.meta(k) : { icon:'📦', color:'#9aa3b2', tier:'Material' }; }
+  function renderMarket(){
+    if (!marketEl || marketEl.hidden) return;
+    const L = (window.Mobs && Mobs.getLoot) ? Mobs.getLoot() : { gold:0, mats:{} };
+    const tabBtn = (id,label) => '<button class="mk-tab'+(marketTab===id?' on':'')+'" data-tab="'+id+'">'+label+'</button>';
+    let body = '';
+    if (marketTab === 'buy'){
+      const others = marketCatalog.filter(x => x.seller !== myName);
+      body = others.length ? others.map(x => { const it = mkMeta(x.item.name); return '<div class="mk-row" style="--mc:'+it.color+'">'
+        + '<span class="mk-ic">'+it.icon+'</span><div class="mk-info"><b>'+esc(x.item.name)+'</b> ×'+x.qty+'<br><small>'+x.price+' oro c/u · 👤 '+esc(x.seller)+'</small></div>'
+        + '<input class="mk-qty" type="number" min="1" max="'+x.qty+'" value="1"><button class="mk-buy" data-id="'+esc(x.id)+'">Comprar</button></div>'; }).join('')
+        : '<div class="mk-empty">— no hay nada a la venta —</div>';
+    } else if (marketTab === 'sell'){
+      const keys = Object.keys(L.mats||{}).filter(k => (L.mats[k]||0) > 0);
+      body = keys.length ? keys.map(k => { const it = mkMeta(k); return '<div class="mk-row" style="--mc:'+it.color+'">'
+        + '<span class="mk-ic">'+it.icon+'</span><div class="mk-info"><b>'+esc(k)+'</b><br><small>tienes '+L.mats[k]+'</small></div>'
+        + '<input class="mk-sq" type="number" min="1" max="'+L.mats[k]+'" value="1" title="cantidad"><input class="mk-sp" type="number" min="1" value="50" title="precio c/u">'
+        + '<button class="mk-sell" data-name="'+esc(k)+'">Publicar</button></div>'; }).join('')
+        : '<div class="mk-empty">— no tienes materiales · caza bestias y Jefes —</div>';
+    } else {
+      const mine = marketCatalog.filter(x => x.seller === myName);
+      const lst = mine.length ? mine.map(x => { const it = mkMeta(x.item.name); return '<div class="mk-row" style="--mc:'+it.color+'">'
+        + '<span class="mk-ic">'+it.icon+'</span><div class="mk-info"><b>'+esc(x.item.name)+'</b> ×'+x.qty+'<br><small>'+x.price+' oro c/u</small></div>'
+        + '<button class="mk-cancel" data-id="'+esc(x.id)+'">Cancelar</button></div>'; }).join('') : '<div class="mk-empty">— sin listados activos —</div>';
+      const rec = marketReceipts.length ? '<div class="mk-rec"><b>🧾 Ventas mientras no estabas:</b>'+marketReceipts.map(r => '<div>'+r.qty+'× '+esc(r.item)+' → +'+r.total+' oro (a '+esc(r.buyer)+')</div>').join('')+'</div>' : '';
+      body = lst + rec;
+    }
+    marketEl.innerHTML = '<div class="wp-card mk-card">'
+      + '<div class="wp-head"><h3>🏪 Mercado</h3><button class="wp-x" id="mk-close">✕</button></div>'
+      + '<div class="wp-gold">💰 '+L.gold+' oro · 👤 '+esc(myName||'')+'</div>'
+      + '<div class="mk-tabs">'+tabBtn('buy','🛒 Comprar')+tabBtn('sell','🏷️ Vender')+tabBtn('mine','📦 Mis ventas')+'</div>'
+      + '<div class="mk-list">'+body+'</div>'
+      + '<div class="mk-hint">Tus materiales listados salen del inventario (escrow). Si alguien compra estando tú offline, recibes el oro al reconectar.</div></div>';
+    marketEl.querySelector('#mk-close').onclick = toggleMarket;
+    marketEl.querySelectorAll('.mk-tab').forEach(b => b.onclick = () => { marketTab = b.dataset.tab; renderMarket(); });
+    marketEl.querySelectorAll('.mk-buy').forEach(b => b.onclick = () => { const r=b.closest('.mk-row'); Net.send({ t:'market:buy', id:b.dataset.id, qty:Math.max(1, +r.querySelector('.mk-qty').value||1) }); });
+    marketEl.querySelectorAll('.mk-sell').forEach(b => b.onclick = () => { const r=b.closest('.mk-row'); Net.send({ t:'market:create', name:b.dataset.name, qty:Math.max(1,+r.querySelector('.mk-sq').value||1), price:Math.max(1,+r.querySelector('.mk-sp').value||1) }); });
+    marketEl.querySelectorAll('.mk-cancel').forEach(b => b.onclick = () => Net.send({ t:'market:cancel', id:b.dataset.id }));
+  }
   function togglePanel(){ if (!panelEl) return; panelOpen = panelEl.hidden; panelEl.hidden = !panelOpen; if (panelOpen){ buildPanel(); if (document.exitPointerLock) document.exitPointerLock(); } }
   function buildPanel(){
     if (!panelEl) return;
@@ -924,7 +995,7 @@ const World3D = (function(){
       + '<div class="w-skills" id="w-skills"></div>'
       + '<div class="w-chat" id="w-chat"></div>'
       + '<input id="w-chatin" class="w-chatin" maxlength="120" placeholder="Enter para chatear…" autocomplete="off">'
-      + '<div class="w-hint"><b>mouse</b> mira · <b>clic izq</b> golpe · <b>clic der</b>/<b>Tab</b> fijar · <b>1-4</b> skills · <b>WASD</b> · <b>I</b> forja · <b>G</b> esquirlas · <b>Enter</b> chat · <b>K</b> PvP · <b>Esc</b> soltar</div>';
+      + '<div class="w-hint"><b>mouse</b> mira · <b>clic izq</b> golpe · <b>clic der</b>/<b>Tab</b> fijar · <b>1-4</b> skills · <b>WASD</b> · <b>I</b> forja · <b>M</b> mercado · <b>G</b> esquirlas · <b>Enter</b> chat · <b>K</b> PvP · <b>Esc</b> soltar</div>';
     hud._status=document.getElementById('w-status'); hud._count=document.getElementById('w-count'); hud._nation=document.getElementById('w-nation');
     hud._party=document.getElementById('w-party'); hud._pvp=document.getElementById('w-pvp');
     hud._toast=document.getElementById('w-toast'); hud._prompt=document.getElementById('w-prompt'); hud._dot=document.getElementById('w-dot');

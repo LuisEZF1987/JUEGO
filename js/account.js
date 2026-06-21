@@ -12,12 +12,15 @@ const Account = (function(){
   let data = (function(){ try { const r = JSON.parse(localStorage.getItem(KEY)); if (r && Array.isArray(r.chars)) return r; } catch(e){} return { chars:[], activeId:null }; })();
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){} };
   const uid  = () => 'c' + Date.now().toString(36) + Math.floor(Math.random()*46656).toString(36);
+  // secret por personaje (identidad ante el servidor; nunca se muestra ni viaja salvo en el join)
+  function genSecret(){ const a = new Uint8Array(16); (window.crypto||window.msCrypto).getRandomValues(a); return Array.from(a).map(b => b.toString(16).padStart(2,'0')).join(''); }
+  function secret(){ const c = active(); if (!c) return ''; if (!c.secret){ c.secret = genSecret(); save(); } return c.secret; }   // genera uno para chars viejos sin secret
 
   const list      = () => data.chars;
   const active    = () => data.chars.find(c => c.id === data.activeId) || null;
   const setActive = (id) => { data.activeId = id; save(); };
   function create(name, hero){
-    const c = { id:uid(), name:(String(name||'').trim().slice(0,16) || 'Héroe'), hero, level:1, xp:0, gold:0, kills:0, mats:{}, forge:{ weapon:0, armor:0, amulet:0 }, created:Date.now() };
+    const c = { id:uid(), name:(String(name||'').trim().slice(0,16) || 'Héroe'), hero, level:1, xp:0, gold:0, kills:0, mats:{}, forge:{ weapon:0, armor:0, amulet:0 }, secret:genSecret(), created:Date.now() };
     data.chars.push(c); data.activeId = c.id; save(); return c;
   }
   function remove(id){ data.chars = data.chars.filter(c => c.id !== id); if (data.activeId === id) data.activeId = data.chars[0] ? data.chars[0].id : null; save(); }
@@ -69,6 +72,6 @@ const Account = (function(){
 
   // sincroniza el progreso runtime (world3d/mobs) con el personaje activo
   function pull(){ const c = active(); return c ? { level:c.level||1, xp:c.xp||0, gold:c.gold||0, kills:c.kills||0, mats:c.mats||(c.mats={}), forge:c.forge||(c.forge={weapon:0,armor:0,amulet:0}) } : null; }
-  return { list, active, setActive, create, remove, progress, setProgress, pull, name:charName, hero:charHero, render, save };
+  return { list, active, setActive, create, remove, progress, setProgress, pull, secret, name:charName, hero:charHero, render, save };
 })();
 window.Account = Account;   // expuesto en window para los chequeos `window.Account` (main.js / world3d.js)

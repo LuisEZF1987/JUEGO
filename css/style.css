@@ -245,6 +245,22 @@ canvas#worldcanvas:active{cursor:grabbing}
 .wpanel{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(6,8,16,.6);z-index:30;pointer-events:auto}
 .wpanel[hidden]{display:none}
 .wp-card{width:min(440px,94%);max-height:92%;overflow:auto;background:linear-gradient(180deg,#191e30,#11141f);border:1px solid #2a3050;border-radius:14px;padding:16px 18px;box-shadow:0 24px 70px rgba(0,0,0,.6);color:#e8ecf8}
+/* Mercado */
+.wpanel .mk-card{width:min(560px,94vw)}
+.mk-tabs{display:flex;gap:6px;margin:10px 0 4px}
+.mk-tab{flex:1;background:#0d1020;border:1px solid #2a3050;color:#e8ecf8;border-radius:8px;padding:8px;cursor:pointer;font-weight:700;font-size:13px}
+.mk-tab.on{background:linear-gradient(90deg,#7c5cff,#9b7cff);color:#0c0e16;border-color:transparent}
+.mk-list{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.mk-row{display:flex;align-items:center;gap:8px;background:#0d1020;border:1px solid #2a3050;border-left:3px solid var(--mc,#9aa3b2);border-radius:8px;padding:7px 9px}
+.mk-ic{font-size:20px}
+.mk-info{flex:1;font-size:13px}.mk-info small{color:#9aa3c2}
+.mk-row input{width:60px;background:#11141f;border:1px solid #2a3050;color:#e8ecf8;border-radius:6px;padding:5px;font-size:12px}
+.mk-buy,.mk-sell,.mk-cancel{border:0;border-radius:7px;padding:7px 11px;cursor:pointer;font-weight:700;font-size:12px;color:#0c0e16}
+.mk-buy,.mk-sell{background:linear-gradient(90deg,#39b06f,#5ad469)}
+.mk-cancel{background:linear-gradient(90deg,#ff7b7b,#ffb0b0)}
+.mk-empty{color:#9aa3c2;text-align:center;padding:14px;font-size:13px}
+.mk-rec{margin-top:10px;background:#0d1020;border:1px solid #2a3050;border-radius:8px;padding:9px;font-size:12.5px;color:#bfe6c2}
+.mk-hint{color:#9aa3c2;font-size:11.5px;margin-top:8px;line-height:1.4}
 .wp-head{display:flex;align-items:center;justify-content:space-between}
 .wp-head h3{margin:0;font-size:18px}
 .wp-x{background:#0d1020;border:1px solid #2a3050;color:#e8ecf8;border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:14px}

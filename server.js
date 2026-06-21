@@ -27,6 +27,31 @@ function persistSaves(){ if (saveTimer) return; saveTimer = setTimeout(() => { s
   const tmp = SAVE_FILE + '.tmp';
   fs.writeFile(tmp, JSON.stringify(saves), err => { if (err) return; fs.rename(tmp, SAVE_FILE, () => {}); });
 }, 1500); }
+// escritura SÍNCRONA atómica (para mutaciones de mercado: persistir YA, sin debounce)
+function writeJsonAtomicSync(file, obj){ const tmp = file + '.tmp'; try { fs.writeFileSync(tmp, JSON.stringify(obj)); fs.renameSync(tmp, file); } catch(e){ console.warn('[write] falló', file, e.message); } }
+function persistSavesNow(){ if (saveTimer){ clearTimeout(saveTimer); saveTimer = null; } writeJsonAtomicSync(SAVE_FILE, saves); }
+
+// ---- identidad mínima por personaje (TOFU: secret-por-nombre; guardamos el hash) ----
+const AUTH_FILE = path.join(ROOT, 'auth.json');
+let auth = {}; try { auth = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')) || {}; } catch(e){ auth = {}; }
+function hashSecret(s){ return crypto.createHash('sha256').update('el:' + s).digest('hex'); }
+function authClaim(nameLower, secret){            // true si el secret coincide o es la 1ª vez (TOFU)
+  if (!secret) return !auth[nameLower];           // sin secret: solo si el nombre no está reclamado
+  const sh = hashSecret(secret);
+  if (!auth[nameLower]){ auth[nameLower] = { sh, createdAt: Date.now() }; writeJsonAtomicSync(AUTH_FILE, auth); return true; }
+  return auth[nameLower].sh === sh;
+}
+
+// ---- mercado / casa de subastas (materiales) — ver market.json ----
+const MARKET_FILE = path.join(ROOT, 'market.json');
+let market = { nextId:0, listings:{}, receipts:{} };
+try { const mm = JSON.parse(fs.readFileSync(MARKET_FILE, 'utf8')); if (mm && mm.listings) market = mm; } catch(e){}
+function persistMarket(){ writeJsonAtomicSync(MARKET_FILE, market); }
+const MAT_WHITELIST = new Set(['Lingote de Hierro','Madera de Roble','Polvo de Refinamiento','Cristal de Refinamiento','Cristal Divino','Adamantita Estelar','Brasa Eterna','Pluma de Tempestad','Fragmento de Trueno','Corazón Pétreo','Lágrima Abisal','Savia Eterna']);
+const MAX_LISTINGS = 12;   // tope de listados activos por cuenta (anti-spam)
+function intc(v, lo, hi){ v = Math.floor(+v || 0); return Math.max(lo, Math.min(hi, v)); }
+function matCount(sv, name){ return (sv && sv.mats && sv.mats[name]) || 0; }
+function activeListingsOf(name){ let n = 0; for (const id in market.listings){ const L = market.listings[id]; if (L.seller === name && L.status === 'active') n++; } return n; }
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -140,14 +165,20 @@ function handleMsg(c, data){
     c.name = ('' + (m.name || 'Héroe')).slice(0, 16);
     c.hero = m.hero || 'kael';
     c.clan = ('' + (m.clan || '')).slice(0, 8);
-    if (saves[c.name]) send(c, { t:'save', save:saves[c.name] });   // restaura el progreso de la cuenta
+    c.authed = authClaim(c.name.toLowerCase(), m.secret);   // identidad TOFU (secret-por-personaje)
+    if (!c.authed){ send(c, { t:'authfail', reason:'name_taken' }); }   // nombre reclamado por otro secret
+    else {
+      if (saves[c.name]) send(c, { t:'save', save:saves[c.name] });   // restaura el progreso de la cuenta
+      const rc = market.receipts[c.name];   // ventas ocurridas mientras estaba OFFLINE
+      if (rc && rc.length){ send(c, { t:'market:receipts', sales: rc }); market.receipts[c.name] = []; persistMarket(); }
+    }
     const others = []; for (const o of clients.values()){ if (o.id !== c.id) others.push(pub(o)); }
     send(c, { t:'welcome', id:c.id, players:others });
     send(c, { t:'bosses', list:bossSnapshot() });   // estado actual de los Jefes compartidos
     broadcast({ t:'joined', player:pub(c) }, c.id);
     console.log('[+] jugador ' + c.id + ' (' + c.name + '/' + c.hero + ') — total ' + clients.size);
   } else if (m.t === 'save'){
-    if (c.name && m.save && typeof m.save === 'object'){ saves[c.name] = m.save; if (m.save.clan != null) c.clan = ('' + m.save.clan).slice(0, 8); persistSaves(); }
+    if (c.authed && c.name && m.save && typeof m.save === 'object'){ saves[c.name] = m.save; if (m.save.clan != null) c.clan = ('' + m.save.clan).slice(0, 8); persistSaves(); }
   } else if (m.t === 'state'){
     c.x = m.x; c.y = m.y; c.z = m.z; c.ry = m.ry; c.nation = m.nation; c.anim = m.anim;
     if (m.pvp != null) c.pvp = !!m.pvp; if (m.hp != null) c.hp = m.hp; if (m.mhp != null) c.mhp = m.mhp;
@@ -185,6 +216,63 @@ function handleMsg(c, data){
     } else {
       broadcast({ t:'boss', el:b.el, hp:b.hp, maxHp:b.maxHp, dead:false });
     }
+
+  // ---- MERCADO (materiales) — handlers SÍNCRONOS (sección crítica natural single-thread) ----
+  } else if (m.t === 'market:list'){
+    const f = m.filter || {}; const out = [];
+    for (const id in market.listings){ const L = market.listings[id]; if (L.status !== 'active') continue;
+      if (f.name && L.item.name !== f.name) continue;
+      if (f.maxPrice && L.price > (+f.maxPrice)) continue;
+      out.push({ id:L.id, seller:L.seller, item:L.item, qty:L.qty, qty0:L.qty0, price:L.price, ts:L.ts });
+      if (out.length >= 200) break;
+    }
+    out.sort((a,b) => (a.price/Math.max(1,a.qty0)) - (b.price/Math.max(1,b.qty0)));
+    send(c, { t:'market:catalog', listings: out });
+
+  } else if (m.t === 'market:create'){
+    if (!c.authed) return send(c, { t:'market:err', code:'auth', msg:'Identidad no verificada' });
+    const name = '' + (m.name || ''), qty = intc(m.qty, 1, 9999), price = intc(m.price, 1, 1e9);
+    const sv = saves[c.name];
+    if (!MAT_WHITELIST.has(name)) return send(c, { t:'market:err', code:'bad_args', msg:'Material inválido' });
+    if (matCount(sv, name) < qty) return send(c, { t:'market:err', code:'no_stock', msg:'No tienes esa cantidad' });
+    if (activeListingsOf(c.name) >= MAX_LISTINGS) return send(c, { t:'market:err', code:'too_many', msg:'Demasiados listados activos (máx ' + MAX_LISTINGS + ')' });
+    sv.mats[name] -= qty; if (sv.mats[name] <= 0) delete sv.mats[name];   // ESCROW: el stock sale del inventario
+    sv.ts = Date.now();
+    const id = 'L' + (++market.nextId);
+    market.listings[id] = { id, seller:c.name, item:{ kind:'mat', name }, qty, qty0:qty, price, ts:Date.now(), status:'active' };
+    persistSavesNow(); persistMarket();
+    send(c, { t:'save', save:sv });
+    send(c, { t:'market:created', listing: market.listings[id], mats: sv.mats });
+
+  } else if (m.t === 'market:buy'){
+    if (!c.authed) return send(c, { t:'market:err', code:'auth' });
+    const L = market.listings['' + (m.id || '')], qty = intc(m.qty, 1, 9999);
+    if (!L || L.status !== 'active') return send(c, { t:'market:err', code:'gone', msg:'Listado no disponible' });
+    if (qty > L.qty) return send(c, { t:'market:err', code:'no_stock', msg:'Cantidad no disponible' });
+    if (L.seller === c.name) return send(c, { t:'market:err', code:'own', msg:'Es tu propio listado' });
+    const buyer = saves[c.name]; if (!buyer) return send(c, { t:'market:err', code:'no_acc' });
+    const cost = L.price * qty;
+    if ((buyer.gold || 0) < cost) return send(c, { t:'market:err', code:'no_gold', msg:'Oro insuficiente' });
+    // sección crítica síncrona: validar → mutar → persistir (sin await/callback en medio)
+    buyer.gold -= cost; buyer.mats = buyer.mats || {}; buyer.mats[L.item.name] = (buyer.mats[L.item.name] || 0) + qty; buyer.ts = Date.now();
+    L.qty -= qty; if (L.qty <= 0) L.status = 'sold';
+    const seller = saves[L.seller];
+    if (seller){ seller.gold = (seller.gold || 0) + cost; seller.ts = Date.now(); }   // crédito al vendedor (aunque esté OFFLINE)
+    (market.receipts[L.seller] = market.receipts[L.seller] || []).push({ listingId:L.id, item:L.item.name, qty, unit:L.price, total:cost, buyer:c.name, ts:Date.now() });
+    persistSavesNow(); persistMarket();
+    send(c, { t:'save', save:buyer });
+    send(c, { t:'market:bought', id:L.id, name:L.item.name, qty, total:cost, gold:buyer.gold, mats:buyer.mats });
+    for (const o of clients.values()){ if (o.name === L.seller && seller){ send(o, { t:'market:sold', id:L.id, name:L.item.name, qty, total:cost, buyer:c.name, gold:seller.gold }); send(o, { t:'save', save:seller }); break; } }
+
+  } else if (m.t === 'market:cancel'){
+    if (!c.authed) return;
+    const L = market.listings['' + (m.id || '')];
+    if (!L || L.seller !== c.name || L.status !== 'active') return send(c, { t:'market:err', code:'not_owner', msg:'No es tu listado' });
+    const sv = saves[c.name];
+    if (sv){ sv.mats = sv.mats || {}; sv.mats[L.item.name] = (sv.mats[L.item.name] || 0) + L.qty; sv.ts = Date.now(); }   // devuelve el escrow
+    L.status = 'cancelled';
+    persistSavesNow(); persistMarket();
+    if (sv){ send(c, { t:'save', save:sv }); send(c, { t:'market:cancelled', id:L.id, mats: sv.mats }); }
   }
 }
 

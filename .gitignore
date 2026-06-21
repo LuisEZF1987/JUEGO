@@ -18,5 +18,9 @@ node_modules/
 # Herramienta local de capturas headless (verificación visual)
 .shots/
 
-# Guardado de cuentas del servidor multijugador (datos de runtime)
+# Datos de runtime del servidor multijugador
 saves.json
+market.json
+auth.json
+server-key.json
+*.tmp

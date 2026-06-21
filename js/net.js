@@ -6,13 +6,13 @@
 const Net = (function(){
   let ws = null, myId = null, cbs = {};
 
-  function connect(name, hero, clan, callbacks){
+  function connect(name, hero, clan, callbacks, secret){
     cbs = callbacks || {};
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     try { ws = new WebSocket(proto + '://' + location.host); }
     catch (e) { if (cbs.error) cbs.error(e); return; }
 
-    ws.onopen = () => { ws.send(JSON.stringify({ t:'join', name:name, hero:hero, clan:clan||'' })); if (cbs.open) cbs.open(); };
+    ws.onopen = () => { ws.send(JSON.stringify({ t:'join', name:name, hero:hero, clan:clan||'', secret:secret||'' })); if (cbs.open) cbs.open(); };
     ws.onmessage = (e) => {
       let m; try { m = JSON.parse(e.data); } catch (_) { return; }
       if (m.t === 'welcome'){ myId = m.id; cbs.welcome && cbs.welcome(m); }
@@ -28,6 +28,14 @@ const Net = (function(){
       else if (m.t === 'bosses')   cbs.bosses && cbs.bosses(m);
       else if (m.t === 'bossdead') cbs.bossdead && cbs.bossdead(m);
       else if (m.t === 'pvphit')   cbs.pvphit && cbs.pvphit(m);
+      else if (m.t === 'authfail') cbs.authfail && cbs.authfail(m);
+      else if (m.t === 'market:catalog')   cbs.marketCatalog   && cbs.marketCatalog(m);
+      else if (m.t === 'market:created')   cbs.marketCreated   && cbs.marketCreated(m);
+      else if (m.t === 'market:bought')    cbs.marketBought    && cbs.marketBought(m);
+      else if (m.t === 'market:sold')      cbs.marketSold      && cbs.marketSold(m);
+      else if (m.t === 'market:cancelled') cbs.marketCancelled && cbs.marketCancelled(m);
+      else if (m.t === 'market:receipts')  cbs.marketReceipts  && cbs.marketReceipts(m);
+      else if (m.t === 'market:err')       cbs.marketErr       && cbs.marketErr(m);
     };
     ws.onclose = () => { if (cbs.close) cbs.close(); };
     ws.onerror = (e) => { if (cbs.error) cbs.error(e); };
