@@ -743,6 +743,9 @@ const World3D = (function(){
     if (renderer) renderer.toneMappingExposure = a.ex + (b.ex - a.ex) * f;
     const ang = (t - 0.25) * Math.PI * 2;   // sale por el este, cenit, se pone por el oeste
     dn.sun.position.set(Math.cos(ang) * 80, Math.max(6, Math.sin(ang) * 90), 35);
+    // factor de noche → enciende faroles ("islas de luz cálida" en la oscuridad)
+    dn.night = Math.max(0, Math.min(1, 1 - (dn.sun.intensity - 0.2) / 0.9));
+    if (window.Town && Town.setNight) Town.setNight(dn.night);
   }
 
   function update(dt){

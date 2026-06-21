@@ -23,6 +23,11 @@ window.Town = (function(){
   const cache = {};
   let THREE = null;
 
+  // materiales que "se encienden" de noche (faroles, fuente) — modulados por world3d según la hora
+  const NIGHT_MATS = [];
+  function registerNight(mat, base){ NIGHT_MATS.push({ mat, base }); }
+  function setNight(f){ f = Math.max(0, Math.min(1, f)); for (const e of NIGHT_MATS) e.mat.emissiveIntensity = e.base * (0.22 + f * 1.7); }   // tenues de día, encendidos de noche
+
   // RNG determinista (igual que mobs.js → mismo mundo para todos)
   function makeRng(seed){ let a = seed>>>0; return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
 
@@ -69,7 +74,9 @@ window.Town = (function(){
   function lamp(scene, x, z, color){
     const g = new THREE.Group();
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 2.4, 6), MAT.iron); post.position.y = 1.2; post.castShadow = true; g.add(post);
-    const glow = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 10), new THREE.MeshStandardMaterial({ color:0xffd98a, emissive:color||0xffb050, emissiveIntensity:2.2, roughness:0.4 }));
+    const glowMat = new THREE.MeshStandardMaterial({ color:0xffd98a, emissive:color||0xffb050, emissiveIntensity:2.2, roughness:0.4 });
+    registerNight(glowMat, 2.2);   // se enciende de noche
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 10), glowMat);
     glow.position.y = 2.5; g.add(glow);
     g.position.set(x, 0, z); scene.add(g);
   }
@@ -149,5 +156,5 @@ window.Town = (function(){
     }).catch(e => console.warn('[town] build falló', e));
   }
 
-  return { build, preload };
+  return { build, preload, setNight };
 })();
