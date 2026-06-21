@@ -24,10 +24,11 @@
   function norm(s){ return s.toString().trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[.,;:!¡¿?]/g,'').replace(/\s+/g,' '); }
 
   // ---------------- navegación ----------------
-  const SCREENS = ['select-screen','puzzle-screen','vault-screen','nations-screen','view3d-screen','game-screen'];
+  const SCREENS = ['select-screen','puzzle-screen','vault-screen','nations-screen','view3d-screen','world-screen','game-screen'];
   function showScreen(id){
     if (id !== 'game-screen' && game){ game.stop(); game = null; }
     if (id !== 'view3d-screen') View3D.stop();
+    if (id !== 'world-screen' && typeof World3D !== 'undefined') World3D.stop();
     SCREENS.forEach(s => { $(s).hidden = (s !== id); });
     document.querySelectorAll('#mainnav .tab').forEach(t => t.classList.toggle('active', t.dataset.screen === id));
     if (id === 'select-screen') buildSelect();
@@ -35,6 +36,7 @@
     if (id === 'vault-screen') buildVault();
     if (id === 'nations-screen') buildNations();
     if (id === 'view3d-screen') enter3D();
+    if (id === 'world-screen') enterWorld();
   }
 
   // ---------------- selección de héroes ----------------
@@ -354,7 +356,26 @@
     grid.querySelectorAll('.nview').forEach(b => b.addEventListener('click', () => { hero3dId = b.dataset.id; showScreen('view3d-screen'); }));
   }
 
+  // ---------------- Mundo multijugador ----------------
+  function enterWorld(){
+    buildWorldHeroBar();
+    const char = CHARACTERS.find(c => c.id === hero3dId) || CHARACTERS[0];
+    World3D.init($('worldcanvas'), char);
+  }
+  function buildWorldHeroBar(){
+    const bar = $('world-hero-bar'); if (!bar) return;
+    bar.innerHTML = CHARACTERS.map(c => {
+      const m = ELEMENT_META[c.element], on = c.id === hero3dId;
+      return '<button class="h3chip '+(on?'on':'')+'" data-id="'+c.id+'" style="--el:'+m.color+'">'+m.emoji+' '+c.name+'</button>';
+    }).join('');
+    bar.querySelectorAll('.h3chip').forEach(b => b.addEventListener('click', () => {
+      hero3dId = b.dataset.id; World3D.setHero(CHARACTERS.find(c => c.id === hero3dId)); buildWorldHeroBar();
+    }));
+  }
+
   // ---------------- init ----------------
+  // Expone el sistema de acertijos para que el Mundo 3D pueda abrirlos.
+  window.GameUI = { openPuzzle: openPuzzle, isSolved: isSolved };
   document.querySelectorAll('#mainnav .tab').forEach(t => t.addEventListener('click', () => showScreen(t.dataset.screen)));
   $('back-btn').addEventListener('click', () => showScreen('select-screen'));
   $('puzzle-modal').addEventListener('click', e => { if (e.target.id === 'puzzle-modal') closeModal(); });

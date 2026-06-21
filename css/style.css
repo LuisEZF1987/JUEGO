@@ -183,3 +183,16 @@ canvas#scene3d:active{cursor:grabbing}
 .h3-slot .k{font-weight:800;font-size:17px;line-height:1}
 .h3-slot .nm{font-size:8px;text-align:center;line-height:1.05;padding:1px 3px 0;color:#aab2d4}
 .h3-slot .cd{position:absolute;left:0;bottom:0;width:100%;background:rgba(0,0,0,.62);color:#fff;font-weight:800;font-size:16px;display:flex;align-items:flex-end;justify-content:center;padding-bottom:3px}
+
+/* ---------- Mundo multijugador ---------- */
+#world-hero-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+canvas#worldcanvas{display:block;width:100%;max-width:980px;height:auto;aspect-ratio:980/600;margin:0 auto;background:#0a0c14;border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 50px rgba(0,0,0,.5);cursor:grab;touch-action:none}
+canvas#worldcanvas:active{cursor:grabbing}
+.worldhud{position:absolute;inset:0;pointer-events:none;font-family:"Segoe UI",system-ui,sans-serif}
+.worldhud .w-top{position:absolute;top:12px;left:14px;background:rgba(0,0,0,.5);color:#eef;padding:7px 12px;border-radius:9px;font-size:13px;display:flex;align-items:center;gap:7px}
+.worldhud .dot{width:10px;height:10px;border-radius:50%;background:#888;display:inline-block}
+.worldhud .w-hint{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.5);color:#cdd5f5;padding:6px 12px;border-radius:9px;font-size:12px;white-space:nowrap}
+.worldhud .w-hint b{color:#fff}
+.worldhud .w-prompt{position:absolute;bottom:54px;left:50%;transform:translateX(-50%);background:rgba(124,92,255,.9);color:#fff;padding:8px 16px;border-radius:10px;font-size:14px;font-weight:700;white-space:nowrap}
+.worldhud .w-prompt:empty{display:none}
+.worldhud .w-toast{position:absolute;top:54px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.65);color:#9be88a;padding:7px 14px;border-radius:9px;font-size:13px;transition:opacity .4s;opacity:0}

@@ -18,6 +18,7 @@
       <button class="tab" data-screen="vault-screen">🗝️ Bóveda</button>
       <button class="tab" data-screen="nations-screen">🗺️ Naciones</button>
       <button class="tab" data-screen="view3d-screen">🎮 Batalla 3D</button>
+      <button class="tab" data-screen="world-screen">🌍 Mundo</button>
     </div>
   </nav>
 
@@ -76,6 +77,19 @@
     <div id="nation3d-info" class="nation3d-info"></div>
   </section>
 
+  <!-- ===== Mundo multijugador ===== -->
+  <section id="world-screen" class="screen" hidden>
+    <header class="title">
+      <h1>🌍 Mundo — Multijugador</h1>
+      <p>Explora las <b>6 Naciones</b> con otros jugadores conectados. Acércate a un <b>cristal de acertijo</b> y pulsa <b>E</b> para resolverlo. Muévete con <b>WASD</b> y gira la cámara arrastrando el ratón.</p>
+    </header>
+    <div id="world-hero-bar"></div>
+    <div class="scene-wrap">
+      <canvas id="worldcanvas" width="980" height="600"></canvas>
+      <div id="worldhud" class="worldhud"></div>
+    </div>
+  </section>
+
   <!-- ===== Juego ===== -->
   <section id="game-screen" class="screen" hidden>
     <div class="topbar">
@@ -108,6 +122,8 @@
 <script src="js/lib/UnrealBloomPass.js"></script>
 <script src="js/hero3d.js"></script>
 <script src="js/view3d.js"></script>
+<script src="js/net.js"></script>
+<script src="js/world3d.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

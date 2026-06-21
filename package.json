@@ -1,0 +1,13 @@
+{
+  "name": "elemental-legacy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Servidor web + multijugador de Elemental Legacy: The Broken Seal",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}
