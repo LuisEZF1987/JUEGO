@@ -22,6 +22,7 @@ const View3D = (function(){
   const keys = new Set();
   let dragging = false, lastX = 0, lastY = 0, moved = 0;
   let camYaw = Math.PI, camPitch = 0.4, camDist = 8;
+  let pointerLocked = false;   // mouse-look (mismo esquema que el Mundo)
   let raycaster, ndc, groundPlane, aimPoint, reticle;
   let hud = null;
   // estado de carga de modelos glTF (riggeados). Si falla, se usa el
@@ -112,7 +113,7 @@ const View3D = (function(){
     groundPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
     aimPoint = new THREE.Vector3(0, 0, 9);
     reticle = new THREE.Mesh(new THREE.RingGeometry(0.32, 0.5, 28), new THREE.MeshBasicMaterial({ color:0xffffff, transparent:true, opacity:0.8, side:THREE.DoubleSide }));
-    reticle.rotation.x = -Math.PI/2; reticle.renderOrder = 2; scene.add(reticle);
+    reticle.rotation.x = -Math.PI/2; reticle.renderOrder = 2; reticle.visible = false; scene.add(reticle);   // sin cursor-aim: objetivo automático al rival
     canvas.addEventListener('contextmenu', e => e.preventDefault());
 
     bindInput();
@@ -201,6 +202,11 @@ const View3D = (function(){
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     canvasEl.addEventListener('wheel', onWheel, { passive:false });
+    document.addEventListener('pointerlockchange', onPLChange);
+  }
+  function onPLChange(){
+    pointerLocked = (document.pointerLockElement === canvasEl);
+    if (hudEl) hudEl.classList.toggle('lookcam', pointerLocked);   // muestra el punto de mira al centro
   }
   function onKey(e){
     if (!active) return;
@@ -209,19 +215,25 @@ const View3D = (function(){
     else if (k === '3') castSkill(2); else if (k === '4') castSkill(3);
     else if (k === 'q') cycleEnemy(-1); else if (k === 'e') cycleEnemy(1);
     else if (k === ' ' && player && player.group.position.y <= 0.001) player.vy = 6.2;
+    else if (k === 'escape'){ if (pointerLocked && document.exitPointerLock) document.exitPointerLock(); }   // suelta la cámara
     if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) e.preventDefault();
   }
   function onKeyUp(e){ keys.delete(e.key.toLowerCase()); }
-  function onDown(e){ if (!active || e.button !== 0) return; dragging = true; lastX = e.clientX; lastY = e.clientY; moved = 0; }
-  function onMove(e){
-    if (ndc && canvasEl){ const r = canvasEl.getBoundingClientRect(); ndc.x = ((e.clientX - r.left)/r.width)*2 - 1; ndc.y = -((e.clientY - r.top)/r.height)*2 + 1; }
-    if (dragging && active){
-      const dx = e.clientX - lastX, dy = e.clientY - lastY; moved += Math.abs(dx) + Math.abs(dy);
-      camYaw -= dx*0.006; camPitch = Math.max(0.08, Math.min(1.2, camPitch + dy*0.005));
-      lastX = e.clientX; lastY = e.clientY;
-    }
+  function onDown(e){
+    if (!active) return;
+    if (!pointerLocked && canvasEl.requestPointerLock){ try { canvasEl.requestPointerLock(); } catch(_){} }   // cualquier clic "toma" la cámara (mouse-look)
+    if (e.button === 2){ cycleEnemy(1); return; }   // clic DERECHO → cambiar de rival
+    if (e.button === 0){ castSkill(0); }            // clic IZQUIERDO → golpe (skill 1)
   }
-  function onUp(e){ if (!active) return; if (dragging && moved < 7) castSkill(0); dragging = false; }
+  function onMove(e){
+    if (pointerLocked){   // mouse-look: el mouse gira la cámara (como girar la cabeza)
+      camYaw -= (e.movementX||0) * 0.0026;
+      camPitch = Math.max(0.06, Math.min(1.25, camPitch + (e.movementY||0) * 0.0022));
+      return;
+    }
+    if (ndc && canvasEl){ const r = canvasEl.getBoundingClientRect(); ndc.x = ((e.clientX - r.left)/r.width)*2 - 1; ndc.y = -((e.clientY - r.top)/r.height)*2 + 1; }
+  }
+  function onUp(e){ dragging = false; }
   function onWheel(e){ if (!active) return; e.preventDefault(); camDist = Math.max(4, Math.min(13, camDist + (e.deltaY>0 ? 0.7 : -0.7))); }
 
   // ---------------- skills ----------------
@@ -244,7 +256,7 @@ const View3D = (function(){
     const o = sk.offense, el = sk.element, dmgType = sk.dmgType || 'fisico';
     // dirección de apuntado: el jugador apunta al cursor (suelo); el rival apunta al jugador
     let aim;
-    if (caster.faction === 'player'){ const dx = aimPoint.x - caster.group.position.x, dz = aimPoint.z - caster.group.position.z; const d = Math.hypot(dx,dz)||1; aim = { x:dx/d, z:dz/d }; }
+    if (caster.faction === 'player'){ const tg = enemy; if (tg && !tg.dead){ const dx = tg.group.position.x - caster.group.position.x, dz = tg.group.position.z - caster.group.position.z; const d = Math.hypot(dx,dz)||1; aim = { x:dx/d, z:dz/d }; } else { aim = { x:Math.sin(caster.group.rotation.y), z:Math.cos(caster.group.rotation.y) }; } }
     else { const d = dirTo(caster, player); aim = { x:d.x, z:d.z }; }
     caster.targetFacing = Math.atan2(aim.x, aim.z);
     caster.swing = 0.35;
@@ -264,7 +276,7 @@ const View3D = (function(){
         scene.add(m);
         projectiles.push({ mesh:m, dx:aim.x, dz:aim.z, speed:(o.speed||540)*U*1.1, range:(o.range||500)*U, traveled:0, el, dmgType, mult:o.mult, effects:o.effects||[], caster, pierce:!!o.pierce, hit:new Set() });
       } else if (o.shape === 'nuke'){
-        const tp = (caster.faction === 'player') ? aimPoint.clone() : (target ? target.group.position.clone() : caster.group.position.clone());
+        const tp = (caster.faction === 'player') ? ((enemy && !enemy.dead) ? enemy.group.position.clone() : caster.group.position.clone()) : (target ? target.group.position.clone() : caster.group.position.clone());
         const rr = (o.radius||150)*U;
         spawnTelegraph(tp, rr, el, () => { const tg = caster.faction==='player' ? enemy : player; if (tg && !tg.dead && dist2(tp, tg.group.position) <= rr*rr) hit(caster, tg, el, o.mult, dmgType, o.effects||[]); }, o.delay || 0.6);
       } else {
@@ -411,7 +423,7 @@ const View3D = (function(){
       if (mx||mz){ const d=Math.hypot(mx,mz); mx/=d; mz/=d; const sp=keys.has('shift')?7:4.2; f.group.position.x+=mx*sp*dt; f.group.position.z+=mz*sp*dt; f.targetFacing=Math.atan2(mx,mz); moving=true; }
     }
     // el jugador siempre mira hacia el cursor (apuntado con el ratón)
-    if (isPlayer && aimPoint){ const adx = aimPoint.x - f.group.position.x, adz = aimPoint.z - f.group.position.z; if (Math.hypot(adx,adz) > 0.4) f.targetFacing = Math.atan2(adx, adz); }
+    if (isPlayer && enemy && !enemy.dead){ const adx = enemy.group.position.x - f.group.position.x, adz = enemy.group.position.z - f.group.position.z; if (Math.hypot(adx,adz) > 0.4) f.targetFacing = Math.atan2(adx, adz); }   // mira siempre al rival (objetivo)
     // knockback
     if (f.kbx || f.kbz){ f.group.position.x += f.kbx*dt*6; f.group.position.z += f.kbz*dt*6; f.kbx*=0.85; f.kbz*=0.85; if (Math.abs(f.kbx)<0.01) f.kbx=0; if (Math.abs(f.kbz)<0.01) f.kbz=0; }
     // límites
@@ -488,6 +500,7 @@ const View3D = (function(){
     texts = texts.filter(t => { if (t.t<=0){ scene.remove(t.sp); return false; } return true; });
   }
   function updateCamera(dt){
+    if (!pointerLocked && player && !player.dead) camYaw = lerpAngle(camYaw, player.targetFacing + Math.PI, Math.min(1, 3.5*dt));   // sin mouse-look: cámara detrás (mirando al rival)
     const tx = player.group.position.x, ty = player.group.position.y + 1.4, tz = player.group.position.z;
     const cp = Math.cos(camPitch);
     const cx = tx + Math.sin(camYaw)*camDist*cp, cy = ty + Math.sin(camPitch)*camDist, cz = tz + Math.cos(camYaw)*camDist*cp;
@@ -496,7 +509,7 @@ const View3D = (function(){
     camera.lookAt(tx, ty, tz);
   }
   function updateAim(){
-    if (!raycaster) return;
+    if (pointerLocked || !raycaster) return;   // en mouse-look no hay cursor-aim
     raycaster.setFromCamera(ndc, camera);
     const hp = new THREE.Vector3();
     if (raycaster.ray.intersectPlane(groundPlane, hp)) aimPoint.copy(hp);
@@ -509,7 +522,7 @@ const View3D = (function(){
     const sk = player.char.skills.map(s => '<div class="h3-slot" data-key="'+s.key+'"><span class="k">'+s.key+'</span><span class="nm">'+s.name+'</span><span class="cd"></span></div>').join('');
     hudEl.innerHTML =
         '<div class="h3-top"><span id="h3-ename">Centinela</span><div class="h3-bar"><i id="h3-ehp"></i></div></div>'
-      + '<div class="h3-hint">Apunta con el <b>ratón</b> · <b>clic izq.</b>/<b>1</b> atacar · <b>2 3 4</b> skills · <b>WASD</b> mover · <b>Espacio</b> saltar · arrastrar gira cámara · <b>Q/E</b> rival</div>'
+      + '<div class="h3-hint"><b>mouse</b> mira · <b>clic izq</b> golpe · <b>clic der</b>/<b>Q/E</b> rival · <b>2 3 4</b> skills · <b>WASD</b> mover · <b>Espacio</b> saltar · <b>Esc</b> soltar</div>'
       + '<div class="h3-bottom"><div class="h3-vitals"><div class="h3-name" id="h3-pname"></div>'
       + '<div class="h3-bar hp"><i id="h3-php"></i></div><div class="h3-bar ck"><i id="h3-pck"></i></div></div>'
       + '<div class="h3-skills">'+sk+'</div></div>';

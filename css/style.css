@@ -165,6 +165,8 @@ canvas#scene3d:active{cursor:grabbing}
 /* ---------- HUD de Batalla 3D ---------- */
 .scene-wrap{position:relative;max-width:980px;margin:0 auto}
 .hud3d{position:absolute;inset:0;pointer-events:none;font-family:"Segoe UI",system-ui,sans-serif}
+/* punto de mira del Arena (en mouse-look / pointer lock) */
+.hud3d.lookcam::after{content:'';position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;border:2px solid rgba(255,255,255,.8);border-radius:50%;box-shadow:0 0 0 1px rgba(0,0,0,.6),0 0 8px rgba(0,0,0,.7);pointer-events:none}
 .h3-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#cdd5f5;font-weight:700;font-size:15px;letter-spacing:.3px;text-shadow:0 1px 4px #000;background:rgba(8,10,18,.35)}
 .h3-top{position:absolute;top:12px;left:50%;transform:translateX(-50%);text-align:center;color:#fff;text-shadow:0 1px 3px #000;font-weight:700;font-size:13px}
 .h3-top .h3-bar{width:300px;height:13px;margin-top:5px}

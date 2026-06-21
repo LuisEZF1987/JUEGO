@@ -327,12 +327,48 @@ const World3D = (function(){
   function updateGearVisual(){
     if (!player || !player.model || !player.model.aura || !THREE) return;
     const total = forge.weapon + forge.armor + forge.amulet;
-    player.model.aura.intensity = 0.5 + total * 0.16;
-    const divine = forge.weapon > 10 || forge.armor > 10 || forge.amulet > 10;
     const ch = heroDef();
-    const col = divine ? 0xffd86b : (ch && ELEMENT_META[ch.element] ? new THREE.Color(ELEMENT_META[ch.element].color).getHex() : 0xffffff);
-    player.model.aura.color = new THREE.Color(col);
+    if (forge.weapon >= 15){
+      // +15 Amaterasu: el aura que te rodea al caminar se vuelve OSCURA (luz negativa = resta luz)
+      player.model.aura.color = new THREE.Color(0xffffff);
+      player.model.aura.intensity = -1.5;
+    } else {
+      player.model.aura.intensity = 0.5 + total * 0.16;
+      const divine = forge.weapon > 10 || forge.armor > 10 || forge.amulet > 10;
+      const col = divine ? 0xffd86b : (ch && ELEMENT_META[ch.element] ? new THREE.Color(ELEMENT_META[ch.element].color).getHex() : 0xffffff);
+      player.model.aura.color = new THREE.Color(col);
+    }
+    if (player.model.setWeaponLevel) player.model.setWeaponLevel(forge.weapon);   // arma + flamas por tier (negras en +15)
+    if (player.model.setArmorLevel) player.model.setArmorLevel(forge.armor);      // armadura negra en +15
   }
+
+  // ---------------- ayudante de consola (dev) ----------------
+  // En el navegador: EL.setWeapon(15) para ver el brillo del arma a cualquier nivel.
+  window.EL = window.EL || {};
+  window.EL.setWeapon = function(n){
+    n = Math.max(0, Math.min(15, n|0));
+    forge.weapon = n;
+    if (window.Account && Account.active && Account.active()){ Account.active().forge.weapon = n; Account.save(); }
+    updateGearVisual();
+    return (player && player.model) ? ('Arma en +' + n + ' — guardado en tu personaje') : 'Entra al Mundo primero, luego EL.setWeapon(' + n + ')';
+  };
+  window.EL.weaponDump = function(){
+    if (!player || !player.model || !player.model.root) return 'sin modelo glTF (¿cajas de respaldo?)';
+    const info = { hasSetWeapon: !!player.model.setWeaponLevel, weaponCount: player.model.weaponCount, forgeWeapon: forge.weapon, weapons: [] };
+    player.model.root.traverse(o => { if ((o.isMesh || o.isSkinnedMesh) && /sword|axe|staff|dagger|knife|wand|mace|hammer|spear|blade|bow/i.test(o.name||'') && !/shield|book|mug|throw|quiver/i.test(o.name||'')){
+      const m = Array.isArray(o.material) ? o.material[0] : o.material;
+      info.weapons.push({ name:o.name, visible:o.visible, cloned:!!o.userData._wmat, type:m && m.type, hasEmissive:m && ('emissive' in m), emissive:m && m.emissive && m.emissive.getHexString(), ei:m && m.emissiveIntensity, emissiveMap:!!(m && m.emissiveMap) });
+    }});
+    return info;
+  };
+  window.EL.forge = function(weapon, armor, amulet){
+    if (weapon!=null) forge.weapon = Math.max(0,Math.min(15,weapon|0));
+    if (armor!=null)  forge.armor  = Math.max(0,Math.min(15,armor|0));
+    if (amulet!=null) forge.amulet = Math.max(0,Math.min(15,amulet|0));
+    if (window.Account && Account.active && Account.active()){ Account.active().forge = { weapon:forge.weapon, armor:forge.armor, amulet:forge.amulet }; Account.save(); }
+    recomputeVitals(); updateGearVisual();
+    return 'Forja: arma +'+forge.weapon+' · armadura +'+forge.armor+' · amuleto +'+forge.amulet;
+  };
 
   // ---------------- entrada ----------------
   function bindInput(){

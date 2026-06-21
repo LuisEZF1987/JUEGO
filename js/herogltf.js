@@ -100,6 +100,40 @@
     return c;
   }
 
+  // -------- brillo del arma según nivel de forja (estilo enchant de L2) --------
+  // Identifica mallas de arma por nombre (excluye escudos/libros) y les da color
+  // + intensidad emissiva crecientes; el bloom (umbral ~0.85) las hace resplandecer.
+  const WEAPON_RX    = /(sword|axe|staff|dagger|knife|wand|mace|hammer|spear|scythe|blade|katana|glaive|polearm|bow)/i;
+  const NOTWEAPON_RX = /(shield|book|mug|throwable|quiver)/i;
+  function isWeaponName(name){ return !!name && WEAPON_RX.test(name) && !NOTWEAPON_RX.test(name); }
+  // nivel 0-15 -> { color (hex|null), intensity }. <=3 sin brillo; sube de tier en color e intensidad.
+  function weaponGlowFor(level){
+    level = level | 0;
+    if (level <= 3) return { color: null, intensity: 0 };
+    // Colores SATURADOS (un canal domina) para que el tono sobreviva al ACES
+    // tone mapping + bloom del juego (si no, todo se quema a blanco).
+    const stops = [
+      { lv: 4,  c: 0x0a66ff },  // +4-6  azul puro
+      { lv: 7,  c: 0x00e048 },  // +7-9  verde puro
+      { lv: 10, c: 0x9b13ff },  // +10-12 violeta puro
+      { lv: 13, c: 0xff8a00 },  // +13-14 ámbar
+      { lv: 15, c: 0xff1400 },  // +15   rojo
+    ];
+    let c = stops[0].c;
+    for (const s of stops) if (level >= s.lv) c = s.c;
+    // emissive moderado: si es muy alto, el ACES lo quema a blanco (el color lo da el tinte de la hoja)
+    // +15 = flamas NEGRAS (tier abismal): el color del arma es la base, las flamas se pintan en negro
+    return { color: c, intensity: Math.min(1.6, 0.6 + (level - 3) * 0.1), black: level >= 15 };
+  }
+  // textura de flama (gradiente radial suave) para el aura del arma
+  function makeFlameTex(THREE){
+    const cv = document.createElement('canvas'); cv.width = cv.height = 64; const c = cv.getContext('2d');
+    const g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.35, 'rgba(255,255,255,0.55)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = g; c.beginPath(); c.arc(32, 32, 32, 0, Math.PI * 2); c.fill();
+    return new THREE.CanvasTexture(cv);
+  }
+
   // -------- construye un héroe a partir del modelo cacheado --------
   // Devuelve un controlador { group, mixer, update, playOnce, revive, ... }
   // compatible con view3d.js (view3d mueve `group`; nosotros animamos).
@@ -112,14 +146,17 @@
     const glow = new THREE.Color(ELEMENT_META[char.element].glow);
     const hideSet = new Set(cfg.hide || []);
 
+    const weaponMeshes = [], bodyMeshes = [];
     root.traverse(o => {
-      if (o.name && hideSet.has(o.name)) o.visible = false;   // oculta armas/escudos alternos
+      const hidden = o.name && hideSet.has(o.name);
+      if (hidden) o.visible = false;   // oculta armas/escudos alternos
       if (o.isMesh || o.isSkinnedMesh){
         o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false;
         if (cfg.tint){   // por defecto NO: deja la textura del modelo intacta
           if (Array.isArray(o.material)) o.material = o.material.map(m => tintMaterial(THREE, m, glow, true));
           else if (o.material) o.material = tintMaterial(THREE, o.material, glow, true);
         }
+        if (!hidden){ if (isWeaponName(o.name)) weaponMeshes.push(o); else bodyMeshes.push(o); }   // arma vs cuerpo/armadura
       }
     });
 
@@ -176,6 +213,7 @@
     }
     function update(dt, st){
       mixer.update(dt);
+      updateFlames(dt);
       if (st && st.dead){ if (!isDead){ isDead = true; playOnce('die'); } return; }
       if (locked){ lockT -= dt; if (lockT > 0) return; locked = null; }
       const key = st && st.airborne ? 'jump' : st && st.running ? 'run' : st && st.moving ? 'walk' : 'idle';
@@ -190,11 +228,132 @@
     }
     function dispose(){ try { mixer.stopAllAction(); mixer.uncacheRoot(root); } catch(e){} }
 
+    // brillo del arma por nivel de forja (clona el material del arma una vez para
+    // no afectar al cuerpo, que comparte la misma textura/atlas)
+    // --- flamas del arma (aura encendida en la PUNTA, escala con el nivel) ---
+    let flameGroup = null, flameParts = [], flameColor = null, flameStrength = 0, flameBlack = false, weaponTipLocal = null;
+    const _fv = new THREE.Vector3(), _fc = new THREE.Color(), _tmpWhite = new THREE.Color(0xffffff);
+    // punta de la hoja en espacio local de la malla (la empuñadura está en el origen → la punta es el extremo más lejano del eje más largo)
+    function weaponTip(w){
+      if (!w.geometry) return new THREE.Vector3(0, 0.5, 0);
+      if (!w.geometry.boundingBox) w.geometry.computeBoundingBox();
+      const bb = w.geometry.boundingBox, size = new THREE.Vector3(); bb.getSize(size);
+      const c = new THREE.Vector3(); bb.getCenter(c);
+      const pick = (mn, mx) => Math.abs(mx) >= Math.abs(mn) ? mx : mn;   // extremo más lejos del origen
+      if (size.y >= size.x && size.y >= size.z) c.y = pick(bb.min.y, bb.max.y);
+      else if (size.x >= size.z) c.x = pick(bb.min.x, bb.max.x);
+      else c.z = pick(bb.min.z, bb.max.z);
+      return c;
+    }
+    function ensureFlames(){
+      if (flameGroup || !weaponMeshes.length) return;
+      flameGroup = new THREE.Group(); group.add(flameGroup);
+      const tex = makeFlameTex(THREE);
+      for (let i = 0; i < 14; i++){
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0 }));
+        sp.userData = { t: i / 14, sx: (Math.random() - 0.5) * 0.16, sz: (Math.random() - 0.5) * 0.16, sp: 0.8 + Math.random() * 0.9 };
+        flameGroup.add(sp); flameParts.push(sp);
+      }
+    }
+    let _flameT = 0;
+    function updateFlames(dt){
+      if (!flameGroup || flameColor == null || !weaponMeshes.length){ if (flameGroup) flameGroup.visible = false; return; }
+      flameGroup.visible = true; _flameT += dt;
+      const w = weaponMeshes[0]; w.updateWorldMatrix(true, false);
+      if (!weaponTipLocal) weaponTipLocal = weaponTip(w);
+      _fv.copy(weaponTipLocal).applyMatrix4(w.matrixWorld);   // PUNTA del arma en mundo
+      group.worldToLocal(_fv); flameGroup.position.copy(_fv);
+      const col = _fc.set(flameColor);
+      const flick = 0.78 + 0.22 * Math.sin(_flameT * 24) * Math.cos(_flameT * 9.3);   // titileo de fuego
+      const H = (flameBlack ? 0.75 : 0.55) + flameStrength * (flameBlack ? 1.25 : 0.9);
+      const base = (flameBlack ? 0.34 : 0.24) + flameStrength * (flameBlack ? 0.5 : 0.36);
+      for (const sp of flameParts){
+        const u = sp.userData;
+        u.t += dt * u.sp * (0.9 + flameStrength * 0.7);
+        if (u.t >= 1){ u.t -= 1; u.sx = (Math.random() - 0.5) * 0.18; u.sz = (Math.random() - 0.5) * 0.18; }
+        const life = u.t;
+        sp.position.set(u.sx * (1 - life), life * H, u.sz * (1 - life));   // converge al subir, como llama
+        const s = base * (1.05 - life * 0.7) * flick;
+        sp.scale.set(s, s * 1.6, s);
+        if (flameBlack){   // +15 Amaterasu: fuego negro (normal blending) con leve tinte carmesí
+          sp.material.color.setRGB(0.05, 0.0, 0.015);
+          sp.material.opacity = (1 - life) * 0.95 * flick;
+        } else {           // color puro aditivo → resplandece
+          sp.material.color.copy(col);
+          sp.material.opacity = (1 - life) * (0.5 + flameStrength * 0.5) * flick;
+        }
+      }
+    }
+
+    let weaponLevel = -1;
+    function setWeaponLevel(level){
+      level = level | 0;
+      if (level === weaponLevel) return; weaponLevel = level;
+      const g = weaponGlowFor(level);
+      for (const o of weaponMeshes){
+        if (!o.userData._wmat){   // aísla el material del arma
+          o.material = Array.isArray(o.material) ? o.material.map(m => m.clone()) : o.material.clone();
+          o.userData._wmat = true;
+        }
+        const apply = m => { if (!m || !('emissive' in m)) return;
+          if (!m.userData._origColor && m.color) m.userData._origColor = m.color.clone();
+          if (g.color == null){
+            m.emissive = new THREE.Color(0x000000); m.emissiveIntensity = 0;
+            if (m.userData._origColor && m.color) m.color.copy(m.userData._origColor);   // hoja normal
+          } else if (g.black){   // +15 Amaterasu: hoja negra intensa con brasa carmesí tenue
+            if (m.userData._origColor && m.color) m.color.copy(m.userData._origColor).multiplyScalar(0.07);
+            m.emissive = new THREE.Color(0x1c0000); m.emissiveIntensity = 0.45;
+          } else {
+            const col = new THREE.Color(g.color);
+            m.emissive = col.clone(); m.emissiveIntensity = g.intensity;
+            if (m.userData._origColor && m.color) m.color.copy(m.userData._origColor).lerp(col, 0.9);   // tiñe la hoja muy fuerte hacia el color
+          }
+          m.needsUpdate = true; };
+        if (Array.isArray(o.material)) o.material.forEach(apply); else apply(o.material);
+      }
+      // configura las flamas
+      flameColor = g.color;
+      flameBlack = !!g.black;
+      flameStrength = g.color == null ? 0 : Math.min(1, (level - 3) / 12 + 0.3);
+      if (g.color != null) ensureFlames();
+      if (flameGroup){
+        flameGroup.visible = g.color != null;
+        // negro = blending NORMAL (oscurece); color = ADITIVO (resplandece)
+        const bl = flameBlack ? THREE.NormalBlending : THREE.AdditiveBlending;
+        for (const sp of flameParts){ if (sp.material.blending !== bl){ sp.material.blending = bl; sp.material.needsUpdate = true; } }
+      }
+    }
+
+    // armadura/cuerpo: a +15 se vuelve NEGRO intenso (Amaterasu); por debajo, normal
+    let armorLevel = -1;
+    function setArmorLevel(level){
+      level = level | 0;
+      if (level === armorLevel) return; armorLevel = level;
+      const black = level >= 15;
+      for (const o of bodyMeshes){
+        if (!o.userData._amat){   // aísla el material del cuerpo (compartido con otros héroes del modelo cacheado)
+          o.material = Array.isArray(o.material) ? o.material.map(m => m.clone()) : o.material.clone();
+          o.userData._amat = true;
+        }
+        const apply = m => { if (!m || !m.color) return;
+          if (!m.userData._origColorA) m.userData._origColorA = m.color.clone();
+          if (black){
+            m.color.copy(m.userData._origColorA).multiplyScalar(0.07);   // negro intenso
+            if ('emissive' in m){ m.emissive = new THREE.Color(0x140000); m.emissiveIntensity = 0.25; }   // brasa carmesí tenue
+          } else {
+            m.color.copy(m.userData._origColorA);
+            if ('emissive' in m){ m.emissive = new THREE.Color(0x000000); m.emissiveIntensity = 0; }
+          }
+          m.needsUpdate = true; };
+        if (Array.isArray(o.material)) o.material.forEach(apply); else apply(o.material);
+      }
+    }
+
     // arranca en idle para evitar T-pose en el primer frame
     if (actions.idle){ actions.idle.reset().play(); curAction = actions.idle; curKey = 'idle'; }
 
-    return { group, root, mixer, aura, actions, update, playOnce, playLoop, revive, dispose,
-             clipNames: (src.animations || []).map(a => a.name) };
+    return { group, root, mixer, aura, actions, update, playOnce, playLoop, revive, dispose, setWeaponLevel, setArmorLevel,
+             weaponCount: weaponMeshes.length, clipNames: (src.animations || []).map(a => a.name) };
   }
 
   // -------- export global --------
