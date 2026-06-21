@@ -7,7 +7,7 @@
 
 const World3D = (function(){
   let THREE, renderer, scene, camera, composer, raf = 0, active = false, last = 0;
-  let canvasEl, ground, sky, embers, dn = null;   // dn = estado del ciclo día-noche
+  let canvasEl, ground, sky, embers, dn = null, weather = null;   // dn = ciclo día-noche; weather = clima por nación
   let player = null;                 // jugador local
   const remote = new Map();          // id -> jugador remoto
   let nations = [];
@@ -117,6 +117,7 @@ const World3D = (function(){
     const eg = new THREE.BufferGeometry(); eg.setAttribute('position', new THREE.BufferAttribute(pos,3));
     embers = new THREE.Points(eg, new THREE.PointsMaterial({ color:0x9fb0ff, size:0.16, transparent:true, opacity:0.7, blending:THREE.AdditiveBlending, depthWrite:false }));
     scene.add(embers);
+    weather = buildWeather();
 
     composer = new THREE.EffectComposer(renderer);
     composer.setSize(canvas.width, canvas.height);
@@ -355,6 +356,10 @@ const World3D = (function(){
     if (window.Account && Account.active && Account.active()){ Account.active().forge.weapon = n; Account.save(); }
     updateGearVisual();
     return (player && player.model) ? ('Arma en +' + n + ' — guardado en tu personaje') : 'Entra al Mundo primero, luego EL.setWeapon(' + n + ')';
+  };
+  window.EL.tp = function(x, z){   // teleport (útil para recorrer el mundo grande / probar zonas)
+    if (!player) return 'entra al Mundo'; player.group.position.set(+x||0, 0, +z||0);
+    return 'tp a ' + Math.round(+x||0) + ',' + Math.round(+z||0);
   };
   window.EL.setTime = function(t){   // 0=medianoche, 0.3=amanecer, 0.5=mediodía, 0.7=atardecer, 0.8=anochecer
     if (!dn) return 'sin ciclo'; dn.t = ((+t)||0) % 1; if (dn.t < 0) dn.t += 1; updateDayNight(0);
@@ -748,8 +753,48 @@ const World3D = (function(){
     if (window.Town && Town.setNight) Town.setNight(dn.night);
   }
 
+  // ---- clima por nación/elemento (UN Points reciclado que sigue al jugador) ----
+  const WX = 46, WYH = 26, WZ = 46;   // caja alrededor del jugador
+  const WEATHER = {
+    Fuego:  { color:0xff8a3c, size:0.55, vy: 3.6, sway:0.5, add:true,  fall:false, op:0.8 },  // brasas que suben
+    Agua:   { color:0x74b6ff, size:0.30, vy:-24,  sway:0.1, add:false, fall:true,  op:0.55 }, // lluvia
+    Viento: { color:0xffffff, size:0.55, vy:-3.2, sway:1.6, add:false, fall:true,  op:0.8 },  // nieve
+    Tierra: { color:0xc9a86a, size:0.42, vy:-1.6, sway:0.9, add:false, fall:true,  op:0.5 },  // polvo
+    Rayo:   { color:0xfff36a, size:0.5,  vy:-11,  sway:2.2, add:true,  fall:true,  op:0.85 }, // chispas
+    Madera: { color:0x8fcf6a, size:0.6,  vy:-2.6, sway:1.3, add:false, fall:true,  op:0.75 }, // hojas
+  };
+  function buildWeather(){
+    const N = 240, pos = new Float32Array(N*3);
+    for (let i=0;i<N;i++){ pos[i*3]=(Math.random()-0.5)*WX; pos[i*3+1]=Math.random()*WYH; pos[i*3+2]=(Math.random()-0.5)*WZ; }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+    const m = new THREE.PointsMaterial({ color:0xffffff, size:0.4, transparent:true, opacity:0.7, depthWrite:false, sizeAttenuation:true });
+    const pts = new THREE.Points(g, m); pts.frustumCulled = false; pts.visible = false; scene.add(pts);
+    return { pts, geo:g, N, mode:null };
+  }
+  function updateWeather(dt){
+    if (!weather || !player) return;
+    const px = player.group.position.x, pz = player.group.position.z;
+    let el = null, bd = 44;
+    for (const n of nations){ const d = Math.hypot(n.x-px, n.z-pz); if (d < bd){ bd = d; el = n.element; } }   // clima de la Nación cercana
+    const W = el && WEATHER[el] ? WEATHER[el] : null;
+    weather.pts.visible = !!W; if (!W) return;
+    if (weather.mode !== el){ weather.mode = el; const m = weather.pts.material;
+      m.color.setHex(W.color); m.size = W.size; m.opacity = W.op; m.blending = W.add ? THREE.AdditiveBlending : THREE.NormalBlending; m.needsUpdate = true; }
+    const arr = weather.geo.attributes.position.array, tn = performance.now()*0.001;
+    for (let i=0;i<weather.N;i++){ const k=i*3;
+      arr[k+1] += W.vy*dt; arr[k] += Math.sin(tn+i)*W.sway*dt;
+      let lx = arr[k]-px, ly = arr[k+1], lz = arr[k+2]-pz;
+      if (W.fall){ if (ly < 0) ly += WYH; } else { if (ly > WYH) ly -= WYH; }
+      if (lx < -WX/2) lx += WX; else if (lx > WX/2) lx -= WX;
+      if (lz < -WZ/2) lz += WZ; else if (lz > WZ/2) lz -= WZ;
+      arr[k]=px+lx; arr[k+1]=ly; arr[k+2]=pz+lz;
+    }
+    weather.geo.attributes.position.needsUpdate = true;
+  }
+
   function update(dt){
     updateDayNight(dt);   // ciclo día-noche
+    updateWeather(dt);    // clima por nación
     // cooldowns, chakra, buffs temporales, flash
     for (const k in player.cooldowns) player.cooldowns[k] = Math.max(0, player.cooldowns[k] - dt);
     if (!player.dead) player.chakra = Math.min(player.maxChakra, player.chakra + 12*dt);
