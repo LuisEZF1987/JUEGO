@@ -75,14 +75,42 @@
   // RNG determinista (mulberry32): misma semilla → MISMO mundo (mobs/casas/árboles) en todos los clientes.
   const WORLD_SEED = 0x5eed;
   function makeRng(seed){ let a = seed >>> 0; return function(){ a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-  function pickTarget(m){ const a = Math.random()*Math.PI*2, r = Math.random()*11; m.tx = m.cx + Math.cos(a)*r; m.tz = m.cz + Math.sin(a)*r; }
+
+  // ---- ZONAS DE CAZA GRADUADAS (estilo L2) ----
+  let playerLevel = 1;
+  const TOUGH = { 'Lobo Salvaje':1.0, 'Zorro Rojo':0.6, 'Ciervo Astado':1.3, 'Venado Bravío':0.9 };
+  // nivel del mob por BANDA RADIAL de su spawn dentro de la nación (determinista: no depende del jugador)
+  function mobLevel(ni, sx, sz, nation, rng){
+    const ringR = Math.hypot(sx - nation.x, sz - nation.z);
+    const band = ringR < 5 ? 0 : ringR < 10 ? 1 : 2;       // núcleo / media / borde
+    return (1 + ni*2) + band*3 + Math.floor(rng()*2);      // bases 1,3,5,7,9,11 + 0/3/6 + jitter
+  }
+  function mobHp(lvl, cfgName){ return Math.round((14 + lvl*8) * (TOUGH[cfgName]||1)); }
+  function mobGold(lvl){ const g = Math.round(3 + lvl*1.6); return [Math.round(g*0.7), Math.round(g*1.3)]; }
+  function mobXpBase(lvl){ return Math.round(6 + lvl*lvl*0.9); }   // cuadrático: Nv1~7, Nv10~96, Nv18~298
+  // con-color del nombre por diferencia mob-jugador (verde=fácil, amarillo=par, rojo=peligro)
+  function conColor(diff){ return diff>=5?'#ff4d4d': diff>=3?'#ff9a3c': diff>=-2?'#ffe14d': diff>=-5?'#8fff7a': diff>=-9?'#7CFF6B':'#9aa3b2'; }
+  function setPlayerLevel(l){ l = l|0 || 1; if (l === playerLevel) return; playerLevel = l; relabelAll(); }
+  function relabelAll(){   // recolorea los nombres al subir de nivel (libera la textura vieja)
+    for (const m of mobs){ if (!m.label) continue;
+      const col = m.isBoss ? '#ffce54' : conColor((m.lvl||1) - playerLevel);
+      const sp = textSprite((m.isBoss?'☠ ':'') + 'Lv'+(m.lvl||1)+' ' + m.name, col, m.isBoss);
+      const old = m.label.material.map; m.label.material.map = sp.material.map; m.label.material.needsUpdate = true; if (old && old.dispose) old.dispose();
+    }
+  }
+  // vagar DENTRO de su banda (cerca de su spawn) → las zonas no se disuelven
+  function pickTarget(m){
+    const cx = (m.spawnX != null) ? m.spawnX : m.cx, cz = (m.spawnZ != null) ? m.spawnZ : m.cz;
+    const a = Math.random()*Math.PI*2, r = Math.random()*4.5;
+    m.tx = cx + Math.cos(a)*r; m.tz = cz + Math.sin(a)*r;
+  }
 
   // ---- construir una criatura ----
   function buildMob(cfg, nation, isBoss, sx, sz){
     const src = CACHE[cfg.url]; if (!src) return null;
     // SkeletonUtils.clone reconecta el esqueleto en mallas skinned; .clone(true) NO → la malla colapsa invisible
     const root = (THREE.SkeletonUtils && THREE.SkeletonUtils.clone) ? THREE.SkeletonUtils.clone(src.scene) : src.scene.clone(true);
-    root.traverse(o => { if (o.isMesh){ o.castShadow = true; o.frustumCulled = false;
+    root.traverse(o => { if (o.isMesh){ o.castShadow = true; o.frustumCulled = !isBoss;   // bestias culleadas (perf); jefes siempre visibles
       if (isBoss){ const mm = (Array.isArray(o.material)?o.material[0]:o.material).clone();
         mm.color = new THREE.Color(ELEMENT_META[nation.element].color).multiplyScalar(0.45);   // base oscura → silueta clara contra el suelo
         mm.emissive = new THREE.Color(ELEMENT_META[nation.element].glow); mm.emissiveIntensity = 0.85;   // brillo elemental: nunca se camufla
@@ -97,38 +125,51 @@
     if (clip){ const act = mixer.clipAction(clip); act.play(); act.setEffectiveTimeScale(isBoss ? 0.7 : 1.0); }
 
     const el = nation.element;
+    // posición de spawn ANTES del nivel (el nivel depende del radio dentro de la nación)
+    const ox = (sx != null) ? sx : nation.x + (Math.random()-0.5)*16, oz = (sz != null) ? sz : nation.z + (Math.random()-0.5)*16;
+    const ni = (typeof nation._ni === 'number') ? nation._ni : 0;
+    const rngLvl = (typeof nation._rng === 'function') ? nation._rng : Math.random;
+    const lvl = isBoss ? ((1 + ni*2) + 12) : mobLevel(ni, ox, oz, nation, rngLvl);   // Jefe = Nv cosmético alto (HP server)
     const m = {
-      group, mixer, el, isBoss,
-      maxHp: isBoss ? 900 : cfg.hp, hp: isBoss ? 900 : cfg.hp,   // coincide con BOSS_HP del server (syncBosses lo confirma)
+      group, mixer, el, isBoss, lvl,
+      maxHp: isBoss ? 900 : mobHp(lvl, cfg.name), hp: isBoss ? 900 : mobHp(lvl, cfg.name),   // boss 900 = BOSS_HP del server
+      xpBase: mobXpBase(lvl),
       name: isBoss ? (GOD[el].n + ' Encadenado') : cfg.name,
-      gold: cfg.gold || [5,10], flyY: isBoss ? 0 : cfg.fly,
+      gold: isBoss ? (cfg.gold || [5,10]) : mobGold(lvl), flyY: isBoss ? 0 : cfg.fly,
       cx: nation.x, cz: nation.z, tx:0, tz:0, speed: isBoss ? 1.4 : (2 + Math.random()*1.2),
       status:{ stun:0, slow:0, burn:0, burnDps:0, burnAcc:0 }, atkCd:0,
       dead:false, respawn:0, hitFlash:0,
     };
+    m.spawnX = ox; m.spawnZ = oz;
     if (isBoss){ const aura = new THREE.PointLight(new THREE.Color(ELEMENT_META[el].glow).getHex(), 2.6, 16); aura.position.y = 3; group.add(aura); }
-    const label = textSprite((isBoss?'☠ ':'') + m.name, isBoss?'#ffce54':'#dfe7ff', isBoss);
-    label.scale.set(isBoss?6:3, isBoss?1.5:0.75, 1); label.position.y = isBoss?6.2:2.2; group.add(label);
+    const label = textSprite((isBoss?'☠ ':'') + 'Lv'+lvl+' ' + m.name, isBoss?'#ffce54':conColor(lvl - playerLevel), isBoss);
+    label.scale.set(isBoss?6:3, isBoss?1.5:0.75, 1); label.position.y = isBoss?6.2:2.2; group.add(label); m.label = label;
     m.bar = makeBar(); m.bar.sprite.position.y = isBoss?5.6:1.9; group.add(m.bar.sprite);
     pickTarget(m);
-    const ox = (sx != null) ? sx : nation.x + (Math.random()-0.5)*16, oz = (sz != null) ? sz : nation.z + (Math.random()-0.5)*16;
-    m.spawnX = ox; m.spawnZ = oz;
     group.position.set(ox, m.flyY, oz);
     scene.add(group);
     return m;
   }
 
   // ---- poblar el mundo ----
+  const MOB_PER_NATION = 14;
   function populate(_THREE, _scene, nations){
     THREE = _THREE; scene = _scene;
     nations.forEach((n, ni) => {
       const rng = makeRng(WORLD_SEED + ni*101 + 7);   // misma semilla por nación → mismos mobs/posiciones para todos
-      for (let i=0;i<4;i++){
+      n._ni = ni; n._rng = rng;                        // buildMob los lee para el nivel determinista
+      const inn = Math.atan2(-n.z, -n.x);              // hacia la plaza central (lado despejado del pueblo)
+      for (let i=0;i<MOB_PER_NATION;i++){
         const cfg = ANIMALS[Math.floor(rng()*ANIMALS.length)];
-        const sx = n.x + (rng()-0.5)*16, sz = n.z + (rng()-0.5)*16;
+        const band = i<5 ? 0 : i<10 ? 1 : 2;           // 5 núcleo / 5 media / 4 borde
+        const rMin = band===0?0:band===1?5:10, rMax = band===0?5:band===1?10:15;
+        // la banda borde (r 10-15) solo en el semicírculo de entrada → no cae dentro de las casas (arco 'out')
+        const a = band===2 ? (inn + (rng()-0.5)*Math.PI) : (rng()*Math.PI*2);
+        const rr = rMin + rng()*(rMax-rMin);
+        const sx = n.x + Math.cos(a)*rr, sz = n.z + Math.sin(a)*rr;
         const m = buildMob(cfg, n, false, sx, sz); if (m) mobs.push(m);
       }
-      const boss = buildMob(ANIMALS[0], n, true, n.x, n.z); if (boss) mobs.push(boss);   // Jefe (Dios Encadenado) al centro de la nación
+      const boss = buildMob(ANIMALS[0], n, true, n.x, n.z); if (boss) mobs.push(boss);   // Jefe (Dios Encadenado) al centro
     });
   }
 
@@ -175,7 +216,8 @@
     let playerDmg = 0;
     nearest = null; let bestD = 5*5;
     for (const m of mobs){
-      m.mixer.update(dt);
+      const toP0 = playerPos ? Math.hypot(m.group.position.x-playerPos.x, m.group.position.z-playerPos.z) : 0;
+      if (toP0 < 120) m.mixer.update(dt);   // no animar bestias lejanas (perf en mundo grande)
       if (m.dead){ m.respawn -= dt; if (m.respawn <= 0) revive(m); continue; }
       if (m.hitFlash > 0) m.hitFlash -= dt;
       tickStatus(m, dt);
@@ -187,7 +229,7 @@
         const dx = playerPos.x-m.group.position.x, dz = playerPos.z-m.group.position.z, d = Math.hypot(dx,dz)||1;
         m.group.rotation.y = Math.atan2(dx, dz);
         if (d > reach){ m.group.position.x += dx/d*m.speed*1.35*slowF*dt; m.group.position.z += dz/d*m.speed*1.35*slowF*dt; }
-        else { m.atkCd -= dt; if (m.atkCd <= 0){ m.atkCd = m.isBoss ? 2.0 : 1.4; playerDmg += m.isBoss ? 16 : 6; } }
+        else { m.atkCd -= dt; if (m.atkCd <= 0){ m.atkCd = m.isBoss ? 2.0 : 1.4; playerDmg += m.isBoss ? 16 : (4 + m.lvl*1.2); } }   // daño escala con el nivel del mob
       } else if (!stunned){
         // vagar
         const dx = m.tx-m.group.position.x, dz = m.tz-m.group.position.z, d = Math.hypot(dx, dz);
@@ -201,7 +243,7 @@
     texts = texts.filter(t => { if (t.t <= 0){ scene.remove(t.sp); return false; } return true; });
     return playerDmg;
   }
-  function revive(m){ m.dead = false; m.hp = m.maxHp; m.bar.set(1); m.group.visible = true; m.status.stun=0; m.status.slow=0; m.status.burn=0; m.atkCd=0; m.group.position.set(m.cx + (Math.random()-0.5)*16, m.flyY, m.cz + (Math.random()-0.5)*16); pickTarget(m); }
+  function revive(m){ m.dead = false; m.hp = m.maxHp; m.bar.set(1); m.group.visible = true; m.status.stun=0; m.status.slow=0; m.status.burn=0; m.atkCd=0; m.group.position.set(m.spawnX, m.flyY, m.spawnZ); pickTarget(m); }   // reaparece en su banda
 
   // ---- daño a una criatura (núcleo: barra, número flotante, muerte+botín) ----
   function hurt(m, d, color, crit){
@@ -245,7 +287,7 @@
     if (mat){ loot.mats[mat] = (loot.mats[mat]||0) + 1; }
     saveLoot();
     floatDmg(m.group.position, '+' + g + ' oro', '#ffd23c', m.isBoss);
-    const res = { killed:true, name:m.name, gold:g, mat, isBoss:m.isBoss, el:m.el };
+    const res = { killed:true, name:m.name, gold:g, mat, isBoss:m.isBoss, el:m.el, lvl:m.lvl, xpBase:m.xpBase };
     pendingKills.push(res);
     return res;
   }
@@ -315,6 +357,6 @@
   function reset(){ mobs.forEach(m => { scene && scene.remove(m.group); }); mobs = []; texts.forEach(t => scene && scene.remove(t.sp)); texts = []; nearest = null; pendingKills = []; }
 
   // huella del layout (pruebas / futuro minimapa): nombre@spawnX,spawnZ — determinista, igual en todos los clientes
-  function snapshot(){ return mobs.map(m => m.name + (m.isBoss?'*':'') + '@' + Math.round(m.spawnX) + ',' + Math.round(m.spawnZ)); }
-  window.Mobs = { preload, populate, buildEnvironment, update, attack, damageMob, mobsInRadius, pick, getNearest, targetsNear, takeKills, spend, spendBoss, bossMatCount, setLoot, bindLoot, getLoot, reset, snapshot, setBossReporter, syncBosses, grantBossLoot };
+  function snapshot(){ return mobs.map(m => m.name + (m.isBoss?'*':'') + 'Lv' + m.lvl + '@' + Math.round(m.spawnX) + ',' + Math.round(m.spawnZ)); }
+  window.Mobs = { preload, populate, buildEnvironment, update, attack, damageMob, mobsInRadius, pick, getNearest, targetsNear, takeKills, spend, spendBoss, bossMatCount, setLoot, bindLoot, getLoot, reset, snapshot, setBossReporter, syncBosses, grantBossLoot, setPlayerLevel };
 })();

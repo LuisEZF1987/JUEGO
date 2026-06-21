@@ -7,7 +7,7 @@
 
 const World3D = (function(){
   let THREE, renderer, scene, camera, composer, raf = 0, active = false, last = 0;
-  let canvasEl, ground, sky, embers;
+  let canvasEl, ground, sky, embers, dn = null;   // dn = estado del ciclo día-noche
   let player = null;                 // jugador local
   const remote = new Map();          // id -> jugador remoto
   let nations = [];
@@ -47,6 +47,7 @@ const World3D = (function(){
   function finishInit(){
     if (!pendingChar) return;
     syncAccount();
+    if (window.Mobs && Mobs.setPlayerLevel) Mobs.setPlayerLevel(level);   // con-color de mobs respecto a tu nivel
     buildHUD();
     setLocalHero(pendingChar);
     connectNet(pendingChar);
@@ -78,6 +79,7 @@ const World3D = (function(){
     xp += amount; let up = false;
     while (xp >= xpNeeded(level)){ xp -= xpNeeded(level); level++; up = true; }
     if (up) toast('⭐ ¡Subiste a Nivel ' + level + '!  (+12% daño por nivel)');
+    if (up && window.Mobs && Mobs.setPlayerLevel) Mobs.setPlayerLevel(level);   // recolorea con-color al subir
     saveAccount(); pushSave();
   }
 
@@ -92,24 +94,26 @@ const World3D = (function(){
     camera = new THREE.PerspectiveCamera(52, canvas.width/canvas.height, 0.1, 600);
     camera.position.set(0, 7, -10);
 
-    scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x202830, 0.65));
-    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+    const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x202830, 0.65); scene.add(hemi);
+    const ambient = new THREE.AmbientLight(0xffffff, 0.3); scene.add(ambient);
     const sun = new THREE.DirectionalLight(0xffffff, 1.0); sun.position.set(14, 22, 10); scene.add(sun);
 
     const skyMat = new THREE.ShaderMaterial({ side:THREE.BackSide, depthWrite:false,
       uniforms:{ top:{ value:new THREE.Color(0x2a3a6a) }, bot:{ value:new THREE.Color(0x0c0e16) } },
       vertexShader:'varying vec3 vP; void main(){ vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
       fragmentShader:'varying vec3 vP; uniform vec3 top; uniform vec3 bot; void main(){ float h=clamp(normalize(vP).y*0.5+0.5,0.0,1.0); gl_FragColor=vec4(mix(bot,top,h),1.0); }' });
-    sky = new THREE.Mesh(new THREE.SphereGeometry(260, 24, 16), skyMat); scene.add(sky);
-    scene.fog = new THREE.Fog(0x0c0e16, 40, 130);
+    sky = new THREE.Mesh(new THREE.SphereGeometry(420, 24, 16), skyMat); scene.add(sky);
+    scene.fog = new THREE.Fog(0x0c0e16, 55, 190);
+    dn = { t: 0.34, sun, hemi, ambient, skyMat, ca:new THREE.Color(), cb:new THREE.Color() };   // arranca en mañana
+    updateDayNight(0);   // aplica el estado inicial
 
-    ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), new THREE.MeshStandardMaterial({ color:0x1a1e2a, roughness:1 }));
+    ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshStandardMaterial({ color:0x1a1e2a, roughness:1 }));
     ground.rotation.x = -Math.PI/2; scene.add(ground);
 
     buildWorld();
 
     const N = 120, pos = new Float32Array(N*3);
-    for (let i=0;i<N;i++){ pos[i*3]=(Math.random()-0.5)*120; pos[i*3+1]=Math.random()*14; pos[i*3+2]=(Math.random()-0.5)*120; }
+    for (let i=0;i<N;i++){ pos[i*3]=(Math.random()-0.5)*350; pos[i*3+1]=Math.random()*14; pos[i*3+2]=(Math.random()-0.5)*350; }
     const eg = new THREE.BufferGeometry(); eg.setAttribute('position', new THREE.BufferAttribute(pos,3));
     embers = new THREE.Points(eg, new THREE.PointsMaterial({ color:0x9fb0ff, size:0.16, transparent:true, opacity:0.7, blending:THREE.AdditiveBlending, depthWrite:false }));
     scene.add(embers);
@@ -125,7 +129,7 @@ const World3D = (function(){
     if (window.Town) Town.build(THREE, scene, nations);
     else if (window.Mobs) Mobs.buildEnvironment(THREE, scene, nations);
     // criaturas/jefes a cazar
-    if (window.Mobs) Mobs.preload(THREE).then(() => Mobs.populate(THREE, scene, nations));
+    if (window.Mobs) Mobs.preload(THREE).then(() => { Mobs.populate(THREE, scene, nations); if (Mobs.setPlayerLevel) Mobs.setPlayerLevel(level); });
     // apuntado (raycaster) + anillo del objetivo fijado
     raycaster = new THREE.Raycaster();
     ndc = new THREE.Vector2();
@@ -137,10 +141,10 @@ const World3D = (function(){
   }
 
   function buildWorld(){
-    const plaza = new THREE.Mesh(new THREE.CircleGeometry(9, 40), new THREE.MeshStandardMaterial({ color:0x2a2f3e, roughness:1 }));
+    const plaza = new THREE.Mesh(new THREE.CircleGeometry(12, 40), new THREE.MeshStandardMaterial({ color:0x2a2f3e, roughness:1 }));
     plaza.rotation.x = -Math.PI/2; plaza.position.y = 0.02; scene.add(plaza);
 
-    nations = CHARACTERS.map((c, i) => { const ang = (i/CHARACTERS.length)*Math.PI*2; const R = 30; return { name:c.nation, element:c.element, heroId:c.id, x:Math.cos(ang)*R, z:Math.sin(ang)*R }; });
+    nations = CHARACTERS.map((c, i) => { const ang = (i/CHARACTERS.length)*Math.PI*2; const R = 72; return { name:c.nation, element:c.element, heroId:c.id, x:Math.cos(ang)*R, z:Math.sin(ang)*R }; });
 
     nations.forEach((n, idx) => {
       const t = NATION_THEME[n.element], acc = new THREE.Color(t.accent);
@@ -351,6 +355,10 @@ const World3D = (function(){
     if (window.Account && Account.active && Account.active()){ Account.active().forge.weapon = n; Account.save(); }
     updateGearVisual();
     return (player && player.model) ? ('Arma en +' + n + ' — guardado en tu personaje') : 'Entra al Mundo primero, luego EL.setWeapon(' + n + ')';
+  };
+  window.EL.setTime = function(t){   // 0=medianoche, 0.3=amanecer, 0.5=mediodía, 0.7=atardecer, 0.8=anochecer
+    if (!dn) return 'sin ciclo'; dn.t = ((+t)||0) % 1; if (dn.t < 0) dn.t += 1; updateDayNight(0);
+    return 'hora del día = ' + dn.t.toFixed(2);
   };
   window.EL.weaponDump = function(){
     if (!player || !player.model || !player.model.root) return 'sin modelo glTF (¿cajas de respaldo?)';
@@ -604,10 +612,16 @@ const World3D = (function(){
     else if (lockRing) lockRing.visible = false;
   }
   // recompensa de XP por cada presa abatida (de cualquier fuente: básico, skill, quemadura)
+  // XP estilo L2: mob de tu nivel da completo; muy por debajo (gris) da migajas; por encima, bonus
+  function xpReward(mobLvl, plvl, xpBase){
+    const d = (mobLvl||1) - (plvl||1); let f;
+    if (d>=5) f=1.5; else if (d>=3) f=1.25; else if (d>=-2) f=1.0; else if (d>=-5) f=0.4; else if (d>=-9) f=0.1; else f=0.05;
+    return Math.max(1, Math.round((xpBase||7)*f));
+  }
   function drainKills(){
     if (!window.Mobs || !Mobs.takeKills) return;
     for (const k of Mobs.takeKills()){
-      const got = k.isBoss ? 250 : 15;
+      const got = k.isBoss ? 250 : xpReward(k.lvl, level, k.xpBase);
       toast('☠ ' + k.name + '  ·  +' + k.gold + ' oro  ·  +' + got + ' XP' + (k.mat ? '  ·  🎁 ' + k.mat : ''));
       gainXP(got);
       // XP compartida: los miembros del grupo reciben la mitad
@@ -692,7 +706,7 @@ const World3D = (function(){
     toast('🔨 '+cfg.name+' mejorada a +'+forge[slot] + (forge[slot] > 10 ? ' ✦ divino' : ''));
     buildPanel();
   }
-  function onWheel(e){ if (!active) return; e.preventDefault(); camDist=Math.max(5,Math.min(16,camDist+(e.deltaY>0?0.8:-0.8))); }
+  function onWheel(e){ if (!active) return; e.preventDefault(); camDist=Math.max(6,Math.min(22,camDist+(e.deltaY>0?0.8:-0.8))); }
   function modalOpen(){ return false; }   // ya no hay modales que bloqueen el mundo
 
   // ---------------- bucle ----------------
@@ -700,7 +714,39 @@ const World3D = (function(){
   function stop(){ active=false; cancelAnimationFrame(raf); keys.clear(); dragging=false; if (panelEl){ panelEl.hidden = true; panelOpen = false; } Net.disconnect(); remote.forEach(r=>{ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); }); remote.clear(); }
   function loop(now){ if (!active) return; let dt=(now-last)/1000; last=now; dt=Math.min(0.05,dt); update(dt); composer.render(); raf=requestAnimationFrame(loop); }
 
+  // ---- ciclo día-noche (lerps de color/escalares; sin sombras → barato) ----
+  const DN_KEYS = [
+    { t:0.00, top:0x070b1c, bot:0x03040a, sun:0x24306a, si:0.05, hi:0.18, ai:0.10, fog:0x05060e, ex:0.82 },  // medianoche
+    { t:0.22, top:0x1a2348, bot:0x080a14, sun:0x3a4a8a, si:0.22, hi:0.30, ai:0.14, fog:0x0a0c16, ex:0.88 },  // antes del alba
+    { t:0.30, top:0x46538f, bot:0xd9824e, sun:0xffae66, si:0.95, hi:0.50, ai:0.22, fog:0xb98058, ex:1.00 },  // amanecer
+    { t:0.50, top:0x2f63c8, bot:0x9fc2ec, sun:0xfff3df, si:1.30, hi:0.72, ai:0.30, fog:0xaec6e2, ex:1.00 },  // mediodía
+    { t:0.70, top:0x3a3f86, bot:0xe0744a, sun:0xff7a44, si:0.90, hi:0.50, ai:0.22, fog:0xb56848, ex:0.98 },  // atardecer
+    { t:0.80, top:0x141a3c, bot:0x0a0c18, sun:0x2c3a72, si:0.20, hi:0.28, ai:0.14, fog:0x0a0c16, ex:0.90 },  // anochecer
+    { t:1.00, top:0x070b1c, bot:0x03040a, sun:0x24306a, si:0.05, hi:0.18, ai:0.10, fog:0x05060e, ex:0.82 },  // medianoche (wrap)
+  ];
+  const DAY_SECONDS = 300;   // un día completo = 5 min
+  function updateDayNight(dt){
+    if (!dn) return;
+    dn.t = (dn.t + dt / DAY_SECONDS) % 1; if (dn.t < 0) dn.t += 1;
+    const t = dn.t;
+    let i = 0; while (i < DN_KEYS.length - 1 && DN_KEYS[i+1].t <= t) i++;
+    const a = DN_KEYS[i], b = DN_KEYS[Math.min(i+1, DN_KEYS.length-1)];
+    const span = (b.t - a.t) || 1, f = Math.max(0, Math.min(1, (t - a.t) / span));
+    const lerpHex = (u, ha, hb) => u.copy(dn.ca.setHex(ha)).lerp(dn.cb.setHex(hb), f);   // in-place (no rompe uniforms)
+    lerpHex(dn.skyMat.uniforms.top.value, a.top, b.top);
+    lerpHex(dn.skyMat.uniforms.bot.value, a.bot, b.bot);
+    lerpHex(dn.sun.color, a.sun, b.sun);
+    dn.sun.intensity = a.si + (b.si - a.si) * f;
+    dn.hemi.intensity = a.hi + (b.hi - a.hi) * f;
+    dn.ambient.intensity = a.ai + (b.ai - a.ai) * f;
+    if (scene.fog) lerpHex(scene.fog.color, a.fog, b.fog);
+    if (renderer) renderer.toneMappingExposure = a.ex + (b.ex - a.ex) * f;
+    const ang = (t - 0.25) * Math.PI * 2;   // sale por el este, cenit, se pone por el oeste
+    dn.sun.position.set(Math.cos(ang) * 80, Math.max(6, Math.sin(ang) * 90), 35);
+  }
+
   function update(dt){
+    updateDayNight(dt);   // ciclo día-noche
     // cooldowns, chakra, buffs temporales, flash
     for (const k in player.cooldowns) player.cooldowns[k] = Math.max(0, player.cooldowns[k] - dt);
     if (!player.dead) player.chakra = Math.min(player.maxChakra, player.chakra + 12*dt);
@@ -724,8 +770,8 @@ const World3D = (function(){
         if (keys.has('s')||keys.has('arrowdown')){ mx-=fwd.x; mz-=fwd.z; }
         if (keys.has('d')||keys.has('arrowright')){ mx+=right.x; mz+=right.z; }
         if (keys.has('a')||keys.has('arrowleft')){ mx-=right.x; mz-=right.z; }
-        if (mx||mz){ const d=Math.hypot(mx,mz); mx/=d; mz/=d; const sp=keys.has('shift')?9:4.6; player.group.position.x+=mx*sp*dt; player.group.position.z+=mz*sp*dt; player.targetFacing=Math.atan2(mx,mz); moving=true; }
-        const R=60; player.group.position.x=Math.max(-R,Math.min(R,player.group.position.x)); player.group.position.z=Math.max(-R,Math.min(R,player.group.position.z));
+        if (mx||mz){ const d=Math.hypot(mx,mz); mx/=d; mz/=d; const sp=keys.has('shift')?11:6.5; player.group.position.x+=mx*sp*dt; player.group.position.z+=mz*sp*dt; player.targetFacing=Math.atan2(mx,mz); moving=true; }
+        const R=95; player.group.position.x=Math.max(-R,Math.min(R,player.group.position.x)); player.group.position.z=Math.max(-R,Math.min(R,player.group.position.z));
         updateAutoAttack(dt);
       }
       player.group.rotation.y = lerpAngle(player.group.rotation.y, player.targetFacing, 0.2);
@@ -775,7 +821,7 @@ const World3D = (function(){
     if (f.model){
       const sp = (f._px !== undefined) ? Math.hypot(f.group.position.x - f._px, f.group.position.z - f._pz) / Math.max(dt, 1e-4) : 0;
       f._px = f.group.position.x; f._pz = f.group.position.z;
-      f.model.update(dt, { moving: sp > 0.4 || movingHint, running: sp > 5.5, airborne:false, dead:false });
+      f.model.update(dt, { moving: sp > 0.4 || movingHint, running: sp > 8.5, airborne:false, dead:false });
     } else {
       animateFigure(f, dt, movingHint);
     }

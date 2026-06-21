@@ -126,10 +126,10 @@ window.Town = (function(){
     fountain(scene, 0, 0);
     // edificios alrededor de la plaza (la "capital")
     const ring = ['tavern','market','home_A','home_B','blacksmith','home_A'];
-    for (let i=0;i<6;i++){ const a = (i/6)*Math.PI*2, r = 7.2; const x = Math.cos(a)*r, z = Math.sin(a)*r; place(scene, ring[i], x, z, Math.atan2(0-x, 0-z)); }
+    for (let i=0;i<6;i++){ const a = (i/6)*Math.PI*2, r = 12; const x = Math.cos(a)*r, z = Math.sin(a)*r; place(scene, ring[i], x, z, Math.atan2(0-x, 0-z)); }
     // faroles alrededor de la fuente
-    for (let i=0;i<6;i++){ const a = (i/6)*Math.PI*2 + 0.5; lamp(scene, Math.cos(a)*4, Math.sin(a)*4, 0xffd070); }
-    fenceRing(scene, 0, 0, 8.6, 18, rng);
+    for (let i=0;i<6;i++){ const a = (i/6)*Math.PI*2 + 0.5; lamp(scene, Math.cos(a)*7, Math.sin(a)*7, 0xffd070); }
+    fenceRing(scene, 0, 0, 15, 30, rng);
   }
 
   let MAT = null;
