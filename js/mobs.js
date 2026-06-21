@@ -8,7 +8,7 @@
 (function(){
   let THREE = null, scene = null;
   const CACHE = {};            // url -> { scene, animations }
-  let mobs = [], texts = [], nearest = null, pendingKills = [];
+  let mobs = [], texts = [], nearest = null, pendingKills = [], bossReporter = null;
 
   // criaturas comunes (modelos animados CC de three.js)
   const ANIMALS = [
@@ -92,7 +92,7 @@
     const el = nation.element;
     const m = {
       group, mixer, el, isBoss,
-      maxHp: isBoss ? 600 : cfg.hp, hp: isBoss ? 600 : cfg.hp,
+      maxHp: isBoss ? 900 : cfg.hp, hp: isBoss ? 900 : cfg.hp,   // coincide con BOSS_HP del server (syncBosses lo confirma)
       name: isBoss ? (GOD[el].n + ' Encadenado') : cfg.name,
       gold: cfg.gold || [5,10], flyY: isBoss ? 0 : cfg.fly,
       cx: nation.x, cz: nation.z, tx:0, tz:0, speed: isBoss ? 1.4 : (2 + Math.random()*1.2),
@@ -200,10 +200,32 @@
   function hurt(m, d, color, crit){
     if (!m || m.dead) return null;
     d = Math.max(1, Math.round(d));
+    if (m.isBoss && bossReporter){   // Jefe compartido: el HP lo decide el servidor; reportamos el daño y no lo aplicamos local
+      m.hitFlash = 0.15;
+      floatDmg(m.group.position, (crit?'¡'+d+'!':''+d), color || '#ffffff', true);
+      bossReporter(m, d);
+      return { hit:true, name:m.name };
+    }
     m.hp -= d; m.hitFlash = 0.15; m.bar.set(m.hp / m.maxHp);
     floatDmg(m.group.position, (crit?'¡'+d+'!':''+d), color || '#ffffff', m.isBoss);
     if (m.hp > 0) return { hit:true, name:m.name };
     return kill(m);
+  }
+  // ---- Jefes compartidos (autoritativos en el servidor) ----
+  function setBossReporter(fn){ bossReporter = fn || null; }
+  function syncBosses(map){
+    if (!map) return;
+    for (const m of mobs){ if (!m.isBoss) continue; const s = map[m.el]; if (!s) continue;
+      if (s.maxHp) m.maxHp = s.maxHp;
+      if (s.dead){ if (!m.dead){ m.dead = true; m.group.visible = false; } m.hp = 0; m.bar.set(0); }
+      else { if (m.dead){ m.dead = false; m.group.visible = true; pickTarget(m); } m.hp = (s.hp != null) ? s.hp : m.hp; m.bar.set(Math.max(0, m.hp) / m.maxHp); }
+    }
+  }
+  function grantBossLoot(el){
+    const g = 120; loot.gold += g; loot.kills++;
+    const mat = (GOD[el] && GOD[el].m) || null; if (mat) loot.mats[mat] = (loot.mats[mat]||0) + 1;
+    saveLoot();
+    return { gold:g, mat };
   }
   function kill(m){
     m.dead = true; m.group.visible = false; m.respawn = m.isBoss ? 30 : 8;
@@ -287,5 +309,5 @@
 
   // huella del layout (pruebas / futuro minimapa): nombre@spawnX,spawnZ — determinista, igual en todos los clientes
   function snapshot(){ return mobs.map(m => m.name + (m.isBoss?'*':'') + '@' + Math.round(m.spawnX) + ',' + Math.round(m.spawnZ)); }
-  window.Mobs = { preload, populate, buildEnvironment, update, attack, damageMob, mobsInRadius, pick, getNearest, targetsNear, takeKills, spend, spendBoss, bossMatCount, setLoot, bindLoot, getLoot, reset, snapshot };
+  window.Mobs = { preload, populate, buildEnvironment, update, attack, damageMob, mobsInRadius, pick, getNearest, targetsNear, takeKills, spend, spendBoss, bossMatCount, setLoot, bindLoot, getLoot, reset, snapshot, setBossReporter, syncBosses, grantBossLoot };
 })();

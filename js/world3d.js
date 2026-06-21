@@ -23,6 +23,7 @@ const World3D = (function(){
   let forge = { weapon:0, armor:0, amulet:0 }, panelEl = null, panelOpen = false;
   let clan = '', chatEl = null, chatInput = null, chatLines = [];   // clan + caja de chat
   let myParty = [], pendingInvite = null;                          // grupo (party)
+  let serverBosses = {}, contributedBosses = new Set();            // Jefes compartidos (autoritativos)
   // carga de modelos glTF (KayKit). Si falla, se usa el constructor de cajas.
   let modelsReady = false, modelsTried = false, gltfOK = false, pendingChar = null;
   let level = 1, xp = 0;             // progreso del jugador (compartido entre héroes, persistido)
@@ -190,7 +191,7 @@ const World3D = (function(){
     if (!myName){ myName = char.name + '-' + Math.floor(Math.random()*9000+1000); try{ localStorage.setItem('mp_name', myName); }catch(e){} }
     statusTxt = 'Conectando…'; playerCount = 1;
     Net.connect(myName, char.id, clan, {
-      welcome:(m)=>{ statusTxt='Conectado'; playerCount = 1 + (m.players?m.players.length:0); (m.players||[]).forEach(addRemote); pushSave(); },
+      welcome:(m)=>{ statusTxt='Conectado'; playerCount = 1 + (m.players?m.players.length:0); (m.players||[]).forEach(addRemote); pushSave(); if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(bossReport); },
       join:(p)=>{ addRemote(p); playerCount++; chatLog('➕ ' + plabel(p) + ' entró al mundo'); },
       state:(m)=>{ const r=remote.get(m.id); if (r){ r.tx=m.x; r.tz=m.z; r.try=m.ry; r.moving=(m.anim==='walk'); } },
       leave:(id)=>{ const r=remote.get(id); if (r){ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); remote.delete(id); playerCount=Math.max(1,playerCount-1); } },
@@ -198,8 +199,11 @@ const World3D = (function(){
       party:(m)=>{ onParty(m); },
       clan:(m)=>{ const r = remote.get(m.id); if (r){ r.clan = m.clan; refreshNameplate(r); } },
       save:(m)=>{ applyServerSave(m.save); },   // Fase 6: sync de cuenta desde el servidor (gana el más reciente)
-      close:()=>{ statusTxt='Desconectado'; },
-      error:()=>{ statusTxt='Sin conexión'; },
+      boss:(m)=>{ serverBosses[m.el] = { hp:m.hp, maxHp:m.maxHp, dead:m.dead }; },
+      bosses:(m)=>{ (m.list||[]).forEach(b => serverBosses[b.el] = { hp:b.hp, maxHp:b.maxHp, dead:b.dead }); },
+      bossdead:(m)=>{ onBossDead(m); },
+      close:()=>{ statusTxt='Desconectado'; if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(null); },
+      error:()=>{ statusTxt='Sin conexión'; if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(null); },
     });
   }
   function reconnect(char){ Net.disconnect(); remote.forEach(r=>{ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); }); remote.clear(); connectNet(char); }
@@ -247,6 +251,21 @@ const World3D = (function(){
     if (!(myParty && myParty.length > 1)) return;
     if (window.Net && Net.connected && Net.connected()) Net.send({ t:'party', a:'leave' });
     myParty = []; updatePartyHUD(); toast('👋 Saliste del grupo');
+  }
+
+  // ---------------- Jefes compartidos (autoritativos en el servidor) ----------------
+  function bossReport(mob, dmg){ if (window.Net && Net.connected && Net.connected()) Net.send({ t:'bosshit', el:mob.el, dmg:dmg }); contributedBosses.add(mob.el); }
+  function onBossDead(m){
+    const mx = serverBosses[m.el] ? serverBosses[m.el].maxHp : 900;
+    serverBosses[m.el] = { hp:0, maxHp:mx, dead:true };
+    chatLog('☠ ' + (m.by || 'Alguien') + ' selló al Dios de ' + m.el + '!');   // anuncio global en el chat
+    if (contributedBosses.has(m.el)){
+      const r = (window.Mobs && Mobs.grantBossLoot) ? Mobs.grantBossLoot(m.el) : null;
+      gainXP(250); contributedBosses.delete(m.el);
+      toast('🏆 ¡Sellaste al Dios de ' + m.el + '!  +250 XP' + (r && r.mat ? '  ·  🎁 ' + r.mat : '') + '  ·  +120 oro');
+    } else {
+      toast('☠ ' + (m.by || 'Alguien') + ' selló al Dios de ' + m.el);
+    }
   }
 
   // ---------------- cuenta (guardado en servidor) + chat + clan ----------------
@@ -658,7 +677,7 @@ const World3D = (function(){
 
     // combate: efectos + bestias (que contraatacan) + XP por presas
     updateProjectiles(dt); updateStrikes(dt); updateRings(dt); updateZonesWorld(dt); updateWorldTexts(dt); updateLock();
-    if (window.Mobs){ const taken = Mobs.update(dt, player.group.position) || 0; if (taken > 0 && !player.dead) damagePlayer(taken); }
+    if (window.Mobs){ const taken = Mobs.update(dt, player.group.position) || 0; if (taken > 0 && !player.dead) damagePlayer(taken); if (Mobs.syncBosses) Mobs.syncBosses(serverBosses); }
     drainKills();
 
     updateCamera(dt);
@@ -699,6 +718,7 @@ const World3D = (function(){
     if (!hud) return;
     hud.innerHTML = '<div class="w-top"><span class="dot" id="w-dot"></span> <span id="w-status"></span> · <span id="w-count"></span> 👥 · 📍 <span id="w-nation"></span></div>'
       + '<div class="w-level"><span id="w-lvl">Nv 1</span><div class="w-xpbar"><i id="w-xp"></i></div></div>'
+      + '<div class="w-bossbar" id="w-bossbar" hidden><div class="w-bb-name" id="w-bb-name"></div><div class="w-bb-track"><i id="w-bb-fill"></i></div><div class="w-bb-hp" id="w-bb-hptxt"></div></div>'
       + '<div class="w-party" id="w-party"></div>'
       + '<div class="w-loot" id="w-loot"></div>'
       + '<div class="w-target" id="w-target"></div>'
@@ -715,6 +735,7 @@ const World3D = (function(){
     hud._party=document.getElementById('w-party');
     hud._toast=document.getElementById('w-toast'); hud._prompt=document.getElementById('w-prompt'); hud._dot=document.getElementById('w-dot');
     hud._loot=document.getElementById('w-loot'); hud._target=document.getElementById('w-target');
+    hud._bossbar=document.getElementById('w-bossbar'); hud._bbName=document.getElementById('w-bb-name'); hud._bbFill=document.getElementById('w-bb-fill'); hud._bbHp=document.getElementById('w-bb-hptxt');
     hud._lvl=document.getElementById('w-lvl'); hud._xp=document.getElementById('w-xp');
     hud._pname=document.getElementById('w-pname'); hud._hp=document.getElementById('w-hp'); hud._hptxt=document.getElementById('w-hptxt');
     hud._ck=document.getElementById('w-ck'); hud._skills=document.getElementById('w-skills'); hud._slots=[];
@@ -759,7 +780,14 @@ const World3D = (function(){
     // objetivo (fijado o más cercano)
     if (hud._target && window.Mobs){ const m = (lockedMob && !lockedMob.dead) ? lockedMob : Mobs.getNearest();
       if (m && !m.dead){ hud._target.style.display = 'block'; hud._target.innerHTML = ((lockedMob===m)?'🎯 ':'') + (m.isBoss?'☠ ':'🐾 ') + m.name + ' — ' + Math.max(0,Math.ceil(m.hp)) + ' / ' + m.maxHp; }
-      else hud._target.style.display = 'none'; }
+      else hud._target.style.display = 'none';
+      const bb = (lockedMob && lockedMob.isBoss && !lockedMob.dead) ? lockedMob : null;   // barra de Jefe estilo raid (HP compartido)
+      if (hud._bossbar){
+        if (bb){ const frac = Math.max(0, Math.min(1, bb.hp / (bb.maxHp||1)));
+          hud._bossbar.hidden = false; hud._bbName.textContent = '☠ ' + bb.name;
+          hud._bbFill.style.width = (frac*100).toFixed(1) + '%'; hud._bbHp.textContent = Math.max(0, Math.ceil(bb.hp)) + ' / ' + bb.maxHp;
+        } else hud._bossbar.hidden = true;
+      } }
   }
   function toast(msg){ if (hud && hud._toast){ hud._toast.textContent = msg; toastT = 3.2; } }
 

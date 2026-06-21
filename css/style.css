@@ -208,6 +208,13 @@ canvas#worldcanvas:active{cursor:grabbing}
 .worldhud .w-party:empty{display:none}
 .worldhud .w-party-x{margin-left:8px;background:rgba(255,90,90,.22);border:1px solid rgba(255,90,90,.6);color:#ffd2d2;border-radius:7px;padding:2px 7px;font-size:11px;font-weight:700;cursor:pointer;pointer-events:auto}
 .worldhud .w-party-x:hover{background:rgba(255,90,90,.4)}
+/* barra de Jefe estilo raid (HP compartido) */
+.worldhud .w-bossbar{position:absolute;top:14px;left:50%;transform:translateX(-50%);width:min(520px,72%);background:rgba(22,10,12,.72);border:1px solid #7a2a34;border-radius:12px;padding:8px 14px 7px;text-align:center;box-shadow:0 10px 34px rgba(0,0,0,.55);pointer-events:none}
+.worldhud .w-bossbar[hidden]{display:none}
+.worldhud .w-bb-name{font-size:15px;font-weight:800;color:#ffd2a0;letter-spacing:.4px;text-shadow:0 1px 3px #000;margin-bottom:5px}
+.worldhud .w-bb-track{height:15px;background:#0a0608;border:1px solid #5a1f28;border-radius:8px;overflow:hidden}
+.worldhud .w-bb-track i{display:block;height:100%;background:linear-gradient(90deg,#ff3b3b,#ff7a3c);box-shadow:inset 0 0 12px rgba(255,90,60,.7);transition:width .18s linear}
+.worldhud .w-bb-hp{margin-top:3px;font-size:11px;color:#ffd2d2;font-weight:700}
 .worldhud .w-xpbar{width:160px;height:9px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.22);border-radius:6px;overflow:hidden}
 .worldhud .w-xpbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#caa23a,#ffd86b);transition:width .2s}
 .worldhud .w-vitals{position:absolute;bottom:12px;left:14px;min-width:230px}

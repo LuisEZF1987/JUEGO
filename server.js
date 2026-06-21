@@ -81,6 +81,17 @@ function leaveParty(c){
   else toParty(pid, { t:'party', a:'members', list:partyList(pid) });
 }
 
+// ---- Jefes (Dioses Encadenados): HP autoritativo y compartido por todos ----
+const BOSS_DEF = [
+  { el:'Fuego',  name:'Pyrothar Encadenado' },  { el:'Viento', name:'Sylvaris Encadenado' },
+  { el:'Rayo',   name:'Vortigan Encadenado' },  { el:'Tierra', name:'Terrgoth Encadenado' },
+  { el:'Agua',   name:'Nereon Encadenado' },    { el:'Madera', name:'Aethelgard Encadenado' },
+];
+const BOSS_HP = 900, BOSS_RESPAWN = 60000;
+const bosses = {};
+for (const b of BOSS_DEF) bosses[b.el] = { el:b.el, name:b.name, maxHp:BOSS_HP, hp:BOSS_HP, dead:false, respawnAt:0 };
+function bossSnapshot(){ return Object.keys(bosses).map(el => ({ el, name:bosses[el].name, hp:bosses[el].hp, maxHp:bosses[el].maxHp, dead:bosses[el].dead })); }
+
 httpServer.on('upgrade', (req, socket) => {
   const key = req.headers['sec-websocket-key'];
   if (!key) { socket.destroy(); return; }
@@ -127,6 +138,7 @@ function handleMsg(c, data){
     if (saves[c.name]) send(c, { t:'save', save:saves[c.name] });   // restaura el progreso de la cuenta
     const others = []; for (const o of clients.values()){ if (o.id !== c.id) others.push(pub(o)); }
     send(c, { t:'welcome', id:c.id, players:others });
+    send(c, { t:'bosses', list:bossSnapshot() });   // estado actual de los Jefes compartidos
     broadcast({ t:'joined', player:pub(c) }, c.id);
     console.log('[+] jugador ' + c.id + ' (' + c.name + '/' + c.hero + ') — total ' + clients.size);
   } else if (m.t === 'save'){
@@ -149,6 +161,18 @@ function handleMsg(c, data){
   } else if (m.t === 'clan'){
     c.clan = ('' + (m.clan || '')).slice(0, 8);
     broadcast({ t:'clan', id:c.id, clan:c.clan }, c.id);   // anuncia el clan sin reconectar (evita el spam de "entró")
+  } else if (m.t === 'bosshit'){
+    const b = bosses[m.el]; if (!b || b.dead) return;
+    const dmg = Math.max(0, Math.min(100000, (+m.dmg) || 0));
+    b.hp = Math.max(0, b.hp - dmg);
+    if (b.hp <= 0){
+      b.dead = true; b.respawnAt = Date.now() + BOSS_RESPAWN;
+      broadcast({ t:'boss', el:b.el, hp:0, maxHp:b.maxHp, dead:true });
+      broadcast({ t:'bossdead', el:b.el, by:c.name });
+      console.log('[☠] ' + c.name + ' selló a ' + b.name);
+    } else {
+      broadcast({ t:'boss', el:b.el, hp:b.hp, maxHp:b.maxHp, dead:false });
+    }
   }
 }
 
@@ -160,6 +184,23 @@ const heartbeat = setInterval(() => {
   }
 }, 30000);
 httpServer.on('close', () => clearInterval(heartbeat));
+
+// reaparición de Jefes
+const bossTick = setInterval(() => {
+  const now = Date.now();
+  for (const el in bosses){ const b = bosses[el]; if (b.dead && now >= b.respawnAt){ b.dead = false; b.hp = b.maxHp; broadcast({ t:'boss', el, hp:b.maxHp, maxHp:b.maxHp, dead:false }); console.log('[↻] ' + b.name + ' reapareció'); } }
+}, 3000);
+httpServer.on('close', () => clearInterval(bossTick));
+
+httpServer.on('error', (e) => {
+  if (e && e.code === 'EADDRINUSE'){
+    console.error('\n⚠  El puerto ' + PORT + ' ya está en uso (¿tienes otro "node server.js" abierto?).');
+    console.error('   Cierra el otro, o arranca en otro puerto:   PORT=8124 node server.js\n');
+  } else {
+    console.error('Error del servidor:', e);
+  }
+  process.exit(1);
+});
 
 httpServer.listen(PORT, HOST, () => {
   console.log('Elemental Legacy sirviendo en http://' + HOST + ':' + PORT + ' (web + multijugador WS, sin dependencias)');

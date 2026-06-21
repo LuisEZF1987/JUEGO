@@ -24,6 +24,9 @@ const Net = (function(){
       else if (m.t === 'save')   cbs.save && cbs.save(m);
       else if (m.t === 'party')  cbs.party && cbs.party(m);
       else if (m.t === 'clan')   cbs.clan && cbs.clan(m);
+      else if (m.t === 'boss')     cbs.boss && cbs.boss(m);
+      else if (m.t === 'bosses')   cbs.bosses && cbs.bosses(m);
+      else if (m.t === 'bossdead') cbs.bossdead && cbs.bossdead(m);
     };
     ws.onclose = () => { if (cbs.close) cbs.close(); };
     ws.onerror = (e) => { if (cbs.error) cbs.error(e); };
