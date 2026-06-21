@@ -138,7 +138,7 @@
       gold: isBoss ? (cfg.gold || [5,10]) : mobGold(lvl), flyY: isBoss ? 0 : cfg.fly,
       cx: nation.x, cz: nation.z, tx:0, tz:0, speed: isBoss ? 1.4 : (2 + Math.random()*1.2),
       status:{ stun:0, slow:0, burn:0, burnDps:0, burnAcc:0 }, atkCd:0,
-      dead:false, respawn:0, hitFlash:0,
+      dead:false, respawn:0, hitFlash:0, provoke:0,
     };
     m.spawnX = ox; m.spawnZ = oz;
     if (isBoss){ const aura = new THREE.PointLight(new THREE.Color(ELEMENT_META[el].glow).getHex(), 2.6, 16); aura.position.y = 3; group.add(aura); }
@@ -222,9 +222,10 @@
       if (m.hitFlash > 0) m.hitFlash -= dt;
       tickStatus(m, dt);
       const stunned = m.status.stun > 0, slowF = m.status.slow > 0 ? 0.5 : 1;
+      if (m.provoke > 0) m.provoke -= dt;   // aggro social: provocado por un vecino atacado
       const toP = playerPos ? Math.hypot(m.group.position.x-playerPos.x, m.group.position.z-playerPos.z) : 1e9;
       const aggroR = m.isBoss ? 20 : 13, reach = m.isBoss ? 3.4 : 1.9;
-      if (!stunned && playerPos && toP < aggroR){
+      if (!stunned && playerPos && (toP < aggroR || (m.provoke > 0 && toP < 40))){
         // perseguir y atacar al jugador
         const dx = playerPos.x-m.group.position.x, dz = playerPos.z-m.group.position.z, d = Math.hypot(dx,dz)||1;
         m.group.rotation.y = Math.atan2(dx, dz);
@@ -307,6 +308,7 @@
     const d = dmg * adv * (crit ? 1.7 : 1);
     const color = crit ? '#ffd23c' : (adv > 1 ? '#7CFF6B' : (adv < 1 ? '#ff7b7b' : '#ffffff'));
     const res = hurt(m, d, color, crit);
+    if (!m.isBoss) provokeNearby(m);   // aggro social: despierta vecinos del mismo tipo
     for (const e of (opts.effects || [])){
       if (e.kind === 'burn'){ m.status.burn = Math.max(m.status.burn, e.dur); m.status.burnDps = e.dps; }
       else if (e.kind === 'stun' || e.kind === 'root'){ m.status.stun = Math.max(m.status.stun, e.dur); }
@@ -314,6 +316,14 @@
       else if (e.kind === 'knockback' && opts.from){ const dx=m.group.position.x-opts.from.x, dz=m.group.position.z-opts.from.z, dd=Math.hypot(dx,dz)||1, f=(e.force||200)*0.012; m.group.position.x += dx/dd*f; m.group.position.z += dz/dd*f; }
     }
     return res;
+  }
+  // aggro social: al atacar a una bestia, hasta 2 del MISMO tipo cercanas acuden (pull táctico estilo L2)
+  function provokeNearby(m){
+    let n = 0;
+    for (const o of mobsInRadius(m.group.position, 9)){
+      if (o === m || o.isBoss || o.dead) continue;
+      if (o.name === m.name && !(o.provoke > 0)){ o.provoke = 4; if (++n >= 2) break; }
+    }
   }
   function mobsInRadius(pos, r){
     const r2 = r*r, out = [];

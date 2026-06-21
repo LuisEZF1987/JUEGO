@@ -589,7 +589,12 @@ const World3D = (function(){
     floatWorldText(player.group.position, '-'+Math.round(amount), '#ff7b7b');
     if (player.hp <= 0){ player.hp = 0; killPlayer(); }
   }
-  function killPlayer(){ player.dead = true; player.respawn = 3.2; lockedMob = null; if (panelOpen) togglePanel(); toast('💀 Has caído. Reapareces en la plaza…'); }
+  function killPlayer(){
+    player.dead = true; player.respawn = 3.2; lockedMob = null; if (panelOpen) togglePanel();
+    const lost = Math.min(xp, Math.round(xpNeeded(level) * 0.08));   // pierdes ~8% del nivel actual; NUNCA bajas de nivel
+    if (lost > 0){ xp -= lost; saveAccount(); pushSave(); toast('💀 Has caído · −' + lost + ' XP · reapareces en la plaza…'); }
+    else toast('💀 Has caído. Reapareces en la plaza…');
+  }
   function respawnPlayer(){
     player.dead = false; player.hp = player.maxHp; player.chakra = player.maxChakra; player.shield = 0; player.buff = null; player.buffDef = null;
     player.group.position.set(0,0,6); player.group.scale.setScalar(1); player.targetFacing = Math.PI;
