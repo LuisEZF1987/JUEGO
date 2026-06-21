@@ -21,7 +21,12 @@ const PORT = parseInt(process.env.PORT || '8123', 10);
 const SAVE_FILE = path.join(ROOT, 'saves.json');
 let saves = {}; try { saves = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8')) || {}; } catch (e) { saves = {}; }
 let saveTimer = null;
-function persistSaves(){ if (saveTimer) return; saveTimer = setTimeout(() => { saveTimer = null; fs.writeFile(SAVE_FILE, JSON.stringify(saves), () => {}); }, 1500); }
+// escritura ATÓMICA: a un temporal y luego rename (atómico en POSIX) → un crash a media
+// escritura nunca corrompe saves.json (el archivo viejo queda intacto hasta el rename).
+function persistSaves(){ if (saveTimer) return; saveTimer = setTimeout(() => { saveTimer = null;
+  const tmp = SAVE_FILE + '.tmp';
+  fs.writeFile(tmp, JSON.stringify(saves), err => { if (err) return; fs.rename(tmp, SAVE_FILE, () => {}); });
+}, 1500); }
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
