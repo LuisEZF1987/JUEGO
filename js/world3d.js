@@ -524,12 +524,14 @@ const World3D = (function(){
     let dmg = ((ch ? ch.stats.power : 15) + forgeBonus().power) * 0.7 * (1 + (level-1)*0.12);
     if (player.buff) dmg *= (1 + player.buff.amt);
     dmg *= consumeSoulshot(SS_COST_HIT);   // soulshots: +daño gastando oro
+    dmg *= passiveDmgMult();               // Furia de Sangre (poca vida → +daño)
     if (player.model) player.model.playOnce('attack');
     if (m.isPlayer){   // PvP: el objetivo aplica el daño (el server valida que ambos tengan PvP)
       if (window.Net && Net.connected && Net.connected()) Net.send({ t:'pvphit', to:m.id, dmg:Math.round(dmg) });
       floatWorldText(m.group.position, '-'+Math.round(dmg), '#ff9a3c');
     } else {
-      Mobs.damageMob(m, dmg, { element: ch ? ch.element : null });
+      const wet = !!(ch && ch.passive && ch.passive.id === 'aliento_leviatan');   // Humedad: el objetivo recibe +12% un tiempo
+      Mobs.damageMob(m, dmg, { element: ch ? ch.element : null, wet });
     }
   }
   function castSkill(i){
@@ -548,7 +550,7 @@ const World3D = (function(){
     const aim = aimDir();
     player.targetFacing = Math.atan2(aim.x, aim.z);
     if (player.model) player.model.playOnce('attack');
-    const power = (ch.stats.power + forgeBonus().power) * (player.buff ? (1 + player.buff.amt) : 1);
+    const power = (ch.stats.power + forgeBonus().power) * (player.buff ? (1 + player.buff.amt) : 1) * passiveDmgMult();
     if (sk.dash){ const dd = sk.dash.distance * WU; player.group.position.x += aim.x*dd; player.group.position.z += aim.z*dd; spawnRing(player.group.position, 1.4, '#ffffff'); }
     if (sk.offense){
       const o = sk.offense, dmg = power * (o.mult||1) * consumeSoulshot(SS_COST_SKILL);   // soulshots también potencian skills
@@ -608,12 +610,22 @@ const World3D = (function(){
   // recibir daño / muerte / respawn
   function damagePlayer(amount){
     if (player.dead) return;
-    let d = amount * (1 - forgeBonus().reduce);   // la armadura de la Forja reduce el daño
+    const ch = heroDef();
+    const heroArmor = (ch && ch.stats && ch.stats.armor) ? ch.stats.armor : 0;   // armadura de CLASE (estaba declarada pero sin aplicar)
+    let d = amount * (1 - forgeBonus().reduce) * (1 - heroArmor);
     if (player.buffDef) d *= (1 - player.buffDef.amt);
     if (player.shield > 0){ const ab = Math.min(player.shield, d); player.shield -= ab; d -= ab; }
     player.hp -= d; player.hitFlash = 0.15;
-    floatWorldText(player.group.position, '-'+Math.round(amount), '#ff7b7b');
+    // pasivas que ganan Chakra al recibir daño (Piel de Roca, Furia de Sangre)
+    if (ch && ch.passive && (ch.passive.id === 'piel_roca' || ch.passive.id === 'furia_sangre')) player.chakra = Math.min(player.maxChakra, player.chakra + d * 0.4);
+    floatWorldText(player.group.position, '-'+Math.round(d), '#ff7b7b');   // daño REAL (tras armadura)
     if (player.hp <= 0){ player.hp = 0; killPlayer(); }
+  }
+  // multiplicador de daño por pasiva (Furia de Sangre: +daño con poca vida)
+  function passiveDmgMult(){
+    const ch = heroDef(); if (!ch || !ch.passive || !player) return 1;
+    if (ch.passive.id === 'furia_sangre'){ const f = player.hp / player.maxHp; if (f < 0.15) return 1.30; if (f < 0.30) return 1.15; }
+    return 1;
   }
   function killPlayer(){
     player.dead = true; player.respawn = 3.2; lockedMob = null; if (panelOpen) togglePanel();

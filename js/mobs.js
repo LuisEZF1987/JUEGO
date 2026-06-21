@@ -137,7 +137,7 @@
       name: isBoss ? (GOD[el].n + ' Encadenado') : cfg.name,
       gold: isBoss ? (cfg.gold || [5,10]) : mobGold(lvl), flyY: isBoss ? 0 : cfg.fly,
       cx: nation.x, cz: nation.z, tx:0, tz:0, speed: isBoss ? 1.4 : (2 + Math.random()*1.2),
-      status:{ stun:0, slow:0, burn:0, burnDps:0, burnAcc:0 }, atkCd:0,
+      status:{ stun:0, slow:0, burn:0, burnDps:0, burnAcc:0, wet:0 }, atkCd:0,
       dead:false, respawn:0, hitFlash:0, provoke:0,
     };
     m.spawnX = ox; m.spawnZ = oz;
@@ -207,6 +207,7 @@
     const s = m.status;
     if (s.stun > 0) s.stun -= dt;
     if (s.slow > 0) s.slow -= dt;
+    if (s.wet > 0) s.wet -= dt;
     if (s.burn > 0){ s.burn -= dt; s.burnAcc += dt; while (s.burnAcc >= 0.5){ s.burnAcc -= 0.5; hurt(m, s.burnDps*0.5, '#ff8a3c', false); if (m.dead) break; } }
   }
 
@@ -305,7 +306,8 @@
     opts = opts || {};
     const adv = (opts.element && typeof elementAdvantage === 'function') ? elementAdvantage(opts.element, m.el) : 1;
     const crit = (opts.crit != null) ? opts.crit : (Math.random() < 0.15);
-    const d = dmg * adv * (crit ? 1.7 : 1);
+    const d = dmg * adv * (crit ? 1.7 : 1) * (m.status.wet > 0 ? 1.12 : 1);   // Humedad: +12% si está mojado
+    if (opts.wet) m.status.wet = 5;   // aplica/renueva Humedad para los próximos golpes
     const color = crit ? '#ffd23c' : (adv > 1 ? '#7CFF6B' : (adv < 1 ? '#ff7b7b' : '#ffffff'));
     const res = hurt(m, d, color, crit);
     if (!m.isBoss) provokeNearby(m);   // aggro social: despierta vecinos del mismo tipo
