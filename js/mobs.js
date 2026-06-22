@@ -238,7 +238,8 @@
         if (d < 0.7) pickTarget(m);
         else { m.group.position.x += dx/d*m.speed*slowF*dt; m.group.position.z += dz/d*m.speed*slowF*dt; m.group.rotation.y = Math.atan2(dx, dz); }
       }
-      if (m.flyY > 0) m.group.position.y = m.flyY + Math.sin(performance.now()*0.003 + m.cx)*0.3;
+      const _th = (typeof window !== 'undefined' && window.__terrainH) ? window.__terrainH(m.group.position.x, m.group.position.z) : 0;   // sigue el relieve
+      m.group.position.y = _th + (m.flyY > 0 ? m.flyY + Math.sin(performance.now()*0.003 + m.cx)*0.3 : 0);
       if (playerPos){ const pd = (m.group.position.x-playerPos.x)**2 + (m.group.position.z-playerPos.z)**2; if (pd < bestD){ bestD = pd; nearest = m; } }
     }
     for (const t of texts){ t.t -= dt; t.sp.position.y += dt*1.5; t.sp.material.opacity = Math.max(0, t.t); }

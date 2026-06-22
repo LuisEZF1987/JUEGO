@@ -93,7 +93,7 @@ const World3D = (function(){
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
 
     scene = new THREE.Scene();
-    camera = new THREE.PerspectiveCamera(52, canvas.width/canvas.height, 0.1, 600);
+    camera = new THREE.PerspectiveCamera(52, canvas.width/canvas.height, 0.3, 1300);
     camera.position.set(0, 7, -10);
 
     const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x202830, 0.65); scene.add(hemi);
@@ -104,18 +104,15 @@ const World3D = (function(){
       uniforms:{ top:{ value:new THREE.Color(0x2a3a6a) }, bot:{ value:new THREE.Color(0x0c0e16) } },
       vertexShader:'varying vec3 vP; void main(){ vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
       fragmentShader:'varying vec3 vP; uniform vec3 top; uniform vec3 bot; void main(){ float h=clamp(normalize(vP).y*0.5+0.5,0.0,1.0); gl_FragColor=vec4(mix(bot,top,h),1.0); }' });
-    sky = new THREE.Mesh(new THREE.SphereGeometry(420, 24, 16), skyMat); scene.add(sky);
-    scene.fog = new THREE.Fog(0x0c0e16, 55, 190);
+    sky = new THREE.Mesh(new THREE.SphereGeometry(700, 24, 16), skyMat); scene.add(sky);
+    scene.fog = new THREE.Fog(0x0c0e16, 80, 340);
     dn = { t: 0.34, sun, hemi, ambient, skyMat, ca:new THREE.Color(), cb:new THREE.Color() };   // arranca en mañana
     updateDayNight(0);   // aplica el estado inicial
 
-    ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshStandardMaterial({ color:0x1a1e2a, roughness:1 }));
-    ground.rotation.x = -Math.PI/2; scene.add(ground);
-
-    buildWorld();
+    buildWorld();   // construye el terreno con relieve + naciones + zonas
 
     const N = 120, pos = new Float32Array(N*3);
-    for (let i=0;i<N;i++){ pos[i*3]=(Math.random()-0.5)*350; pos[i*3+1]=Math.random()*14; pos[i*3+2]=(Math.random()-0.5)*350; }
+    for (let i=0;i<N;i++){ pos[i*3]=(Math.random()-0.5)*600; pos[i*3+1]=Math.random()*16; pos[i*3+2]=(Math.random()-0.5)*600; }
     const eg = new THREE.BufferGeometry(); eg.setAttribute('position', new THREE.BufferAttribute(pos,3));
     embers = new THREE.Points(eg, new THREE.PointsMaterial({ color:0x9fb0ff, size:0.16, transparent:true, opacity:0.7, blending:THREE.AdditiveBlending, depthWrite:false }));
     scene.add(embers);
@@ -144,11 +141,48 @@ const World3D = (function(){
     bindInput();
   }
 
-  function buildWorld(){
-    const plaza = new THREE.Mesh(new THREE.CircleGeometry(12, 40), new THREE.MeshStandardMaterial({ color:0x2a2f3e, roughness:1 }));
-    plaza.rotation.x = -Math.PI/2; plaza.position.y = 0.02; scene.add(plaza);
+  // ---- terreno procedural con relieve (DETERMINISTA: mismo para todos los clientes) ----
+  function thash(ix, iz){ let h = (ix|0)*374761393 + (iz|0)*668265263; h = (h ^ (h>>>13)) >>> 0; h = (h * 1274126177) >>> 0; return ((h ^ (h>>>16)) >>> 0) / 4294967296; }
+  function tnoise(x, z){ const xi=Math.floor(x), zi=Math.floor(z), xf=x-xi, zf=z-zi;
+    const a=thash(xi,zi), b=thash(xi+1,zi), c=thash(xi,zi+1), d=thash(xi+1,zi+1);
+    const u=xf*xf*(3-2*xf), v=zf*zf*(3-2*zf);
+    return a*(1-u)*(1-v) + b*u*(1-v) + c*(1-u)*v + d*u*v; }
+  function tfbm(x, z){ let s=0, amp=1, f=1; for (let o=0;o<4;o++){ s+=tnoise(x*f, z*f)*amp; f*=2; amp*=0.5; } return s/1.875; }
+  const sstep = (a,b,x) => { const t=Math.max(0,Math.min(1,(x-a)/(b-a))); return t*t*(3-2*t); };
+  function terrainHeight(x, z){
+    const r = Math.hypot(x, z);
+    let flat = sstep(0, 30, r);                                          // aplana la plaza central
+    for (const n of nations){ flat = Math.min(flat, sstep(0, 30, Math.hypot(x - n.x, z - n.z))); }   // y cada Nación (pueblos planos)
+    const hills = (tfbm(x*0.015 + 9, z*0.015 + 9) - 0.5) * 13 * flat;    // colinas entre zonas
+    const mtn = Math.pow(tfbm(x*0.0055, z*0.0055), 1.4) * 95 * sstep(148, 330, r);   // cordillera en el horizonte
+    return hills + mtn;
+  }
+  function buildTerrain(){
+    const SIZE = 1000, SEG = 168;
+    const geo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
+    const p = geo.attributes.position, cols = new Float32Array(p.count*3);
+    const cLow=new THREE.Color(0x232a20), cMid=new THREE.Color(0x3a3c30), cRock=new THREE.Color(0x57545f), cSnow=new THREE.Color(0xccd5e2), tmp=new THREE.Color();
+    for (let i=0;i<p.count;i++){
+      const h = terrainHeight(p.getX(i), -p.getY(i)); p.setZ(i, h);      // plano XY → world (x, h, -y)
+      const t = Math.max(0, Math.min(1, h/60));
+      if (t < 0.5) tmp.copy(cLow).lerp(cMid, t/0.5);
+      else if (t < 0.8) tmp.copy(cMid).lerp(cRock, (t-0.5)/0.3);
+      else tmp.copy(cRock).lerp(cSnow, (t-0.8)/0.2);
+      cols[i*3]=tmp.r; cols[i*3+1]=tmp.g; cols[i*3+2]=tmp.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    geo.computeVertexNormals();
+    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors:true, roughness:1, metalness:0 }));
+    m.rotation.x = -Math.PI/2; scene.add(m);
+    return m;
+  }
 
-    nations = CHARACTERS.map((c, i) => { const ang = (i/CHARACTERS.length)*Math.PI*2; const R = 72; return { name:c.nation, element:c.element, heroId:c.id, x:Math.cos(ang)*R, z:Math.sin(ang)*R }; });
+  function buildWorld(){
+    nations = CHARACTERS.map((c, i) => { const ang = (i/CHARACTERS.length)*Math.PI*2; const R = 110; return { name:c.nation, element:c.element, heroId:c.id, x:Math.cos(ang)*R, z:Math.sin(ang)*R }; });
+    ground = buildTerrain();
+    window.__terrainH = terrainHeight;   // los mobs (mobs.js) la usan para seguir el relieve
+    const plaza = new THREE.Mesh(new THREE.CircleGeometry(18, 48), new THREE.MeshStandardMaterial({ color:0x2a2f3e, roughness:1 }));
+    plaza.rotation.x = -Math.PI/2; plaza.position.y = 0.04; scene.add(plaza);
 
     nations.forEach((n, idx) => {
       const t = NATION_THEME[n.element], acc = new THREE.Color(t.accent);
@@ -676,7 +710,7 @@ const World3D = (function(){
   }
   function updateLock(){
     if (lockedMob && lockedMob.dead) lockedMob = null;
-    if (lockedMob && lockRing){ lockRing.visible = true; const s = lockedMob.isBoss ? 2.4 : 1.0; lockRing.scale.set(s,s,s); lockRing.position.set(lockedMob.group.position.x, 0.08, lockedMob.group.position.z); }
+    if (lockedMob && lockRing){ lockRing.visible = true; const s = lockedMob.isBoss ? 2.4 : 1.0; lockRing.scale.set(s,s,s); lockRing.position.set(lockedMob.group.position.x, lockedMob.group.position.y + 0.12, lockedMob.group.position.z); }
     else if (lockRing) lockRing.visible = false;
   }
   // recompensa de XP por cada presa abatida (de cualquier fuente: básico, skill, quemadura)
@@ -936,8 +970,9 @@ const World3D = (function(){
         if (keys.has('s')||keys.has('arrowdown')){ mx-=fwd.x; mz-=fwd.z; }
         if (keys.has('d')||keys.has('arrowright')){ mx+=right.x; mz+=right.z; }
         if (keys.has('a')||keys.has('arrowleft')){ mx-=right.x; mz-=right.z; }
-        if (mx||mz){ const d=Math.hypot(mx,mz); mx/=d; mz/=d; const sp=keys.has('shift')?11:6.5; player.group.position.x+=mx*sp*dt; player.group.position.z+=mz*sp*dt; player.targetFacing=Math.atan2(mx,mz); moving=true; }
-        const R=95; player.group.position.x=Math.max(-R,Math.min(R,player.group.position.x)); player.group.position.z=Math.max(-R,Math.min(R,player.group.position.z));
+        if (mx||mz){ const d=Math.hypot(mx,mz); mx/=d; mz/=d; const sp=keys.has('shift')?13:7.5; player.group.position.x+=mx*sp*dt; player.group.position.z+=mz*sp*dt; player.targetFacing=Math.atan2(mx,mz); moving=true; }
+        const R=140; player.group.position.x=Math.max(-R,Math.min(R,player.group.position.x)); player.group.position.z=Math.max(-R,Math.min(R,player.group.position.z));
+        player.group.position.y = terrainHeight(player.group.position.x, player.group.position.z);   // sigue el relieve del terreno
         updateAutoAttack(dt);
       }
       player.group.rotation.y = lerpAngle(player.group.rotation.y, player.targetFacing, 0.2);
