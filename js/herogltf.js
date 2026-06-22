@@ -50,6 +50,12 @@
     gorr:  { url:M, hide:HIDE.mage,      clips:{ attack:'Spellcast_Shoot' } },                 // mago: bastón
     lyra:  { url:M, hide:HIDE.mage,      clips:{ attack:'Spellcast_Shoot' } },                 // sanadora: bastón
     sylth: { url:R, hide:HIDE.rogue,     clips:{ attack:'Dualwield_Melee_Attack_Slice' } },    // asesina: dagas dobles
+    // ── GUERREROS REALISTAS (IA 3D) ── para reemplazar un héroe, descomenta y ajusta:
+    //   1) valida tu .glb:  node tools/inspect-glb.js assets/models/warriors/knight.glb
+    //   2) usa el "mapeo sugerido" que imprime el validador como clips
+    //   3) hide:[] (los modelos IA no traen armas alternas); scaleHeight ~2.2-2.6; faceOffset 0 ó Math.PI
+    // brunn: { url:'assets/models/warriors/knight.glb', hide:[], scaleHeight:2.4, faceOffset:0,
+    //          clips:{ idle:'Idle', walk:'Walking', run:'Running', attack:'Slash', die:'Death' } },
   };
 
   const HERO_MODELS_CACHE = {};  // url -> { scene, animations }
@@ -70,12 +76,12 @@
     let done = 0;
     return Promise.all(list.map(url => {
       if (HERO_MODELS_CACHE[url]){ done++; if (onProgress) onProgress(Math.round(done / list.length * 100)); return Promise.resolve(); }
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve) => {
         loader.load(url, gltf => {
           HERO_MODELS_CACHE[url] = { scene: gltf.scene, animations: gltf.animations || [] };
           done++; if (onProgress) onProgress(Math.round(done / list.length * 100));
           resolve();
-        }, undefined, err => reject(err));
+        }, undefined, err => { console.warn('[hero] no cargó', url, err && err.message); done++; resolve(); });   // resiliente: un modelo malo NO rompe el juego (ese héroe usa cajas)
       });
     }));
   }
