@@ -8,8 +8,21 @@
 const fs = require('fs');
 
 const path = process.argv[2];
-if (!path){ console.log('Uso: node tools/inspect-glb.js <archivo.glb>'); process.exit(1); }
+if (!path){ console.log('Uso: node tools/inspect-glb.js <archivo.glb | carpeta/>'); process.exit(1); }
 if (!fs.existsSync(path)){ console.log('✗ No existe:', path); process.exit(1); }
+
+// modo LOTE: si es una carpeta, valida todos los .glb/.gltf adentro
+if (fs.statSync(path).isDirectory()){
+  const req = require('path');
+  const files = fs.readdirSync(path).filter(f => /\.(glb|gltf)$/i.test(f)).sort();
+  if (!files.length){ console.log('(sin .glb en ' + path + ')'); process.exit(0); }
+  let ok = 0;
+  for (const f of files){
+    try { require('child_process').execSync('node ' + __filename + ' "' + req.join(path, f) + '"', { stdio:'inherit' }); ok++; } catch(e){}
+  }
+  console.log('\n──────── ' + files.length + ' modelos revisados en ' + path + ' ────────');
+  process.exit(0);
+}
 
 let json, total = 0;
 try {
