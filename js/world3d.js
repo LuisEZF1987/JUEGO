@@ -215,22 +215,24 @@ const World3D = (function(){
       pvphit:(m)=>{ if (pvpOn && player && !player.dead) damagePlayer(m.dmg||0); },
       authfail:(m)=>{ statusTxt='Nombre en uso'; toast('⚠ Ese nombre ya está en uso por otro jugador. Tu progreso no se cargó (identidad).'); },
       marketCatalog:(m)=>{ marketCatalog = m.listings || []; renderMarket(); },
-      marketCreated:(m)=>{ applyMarketEconomy(null, m.mats); toast('✦ Publicado en el mercado'); Net.send({ t:'market:list' }); },
-      marketBought:(m)=>{ applyMarketEconomy(m.gold, m.mats); toast('🛒 Compraste ' + m.qty + '× ' + m.name + ' por ' + m.total + ' oro'); Net.send({ t:'market:list' }); },
+      marketCreated:(m)=>{ applyMarketEconomy(null, m.mats, m.forge); toast('✦ Publicado en el mercado'); Net.send({ t:'market:list' }); },
+      marketBought:(m)=>{ applyMarketEconomy(m.gold, m.mats, m.forge); toast('🛒 Compraste ' + (m.kind==='gear' ? m.name : (m.qty + '× ' + m.name)) + ' por ' + m.total + ' oro'); Net.send({ t:'market:list' }); },
       marketSold:(m)=>{ if (m.gold != null) applyMarketEconomy(m.gold, null); toast('💰 Vendiste ' + m.qty + '× ' + m.name + ' por ' + m.total + ' oro'); },
-      marketCancelled:(m)=>{ applyMarketEconomy(null, m.mats); toast('Listado cancelado'); Net.send({ t:'market:list' }); },
+      marketCancelled:(m)=>{ applyMarketEconomy(null, m.mats, m.forge); toast('Listado cancelado'); Net.send({ t:'market:list' }); },
       marketReceipts:(m)=>{ const s = m.sales || []; if (s.length){ const tot = s.reduce((a,r)=>a+r.total,0); marketReceipts = s; toast('🧾 ' + s.length + ' venta(s) mientras no estabas: +' + tot + ' oro'); } },
       marketErr:(m)=>{ toast('✗ Mercado: ' + (m.msg || m.code || 'error')); },
       close:()=>{ statusTxt='Desconectado'; if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(null); },
       error:()=>{ statusTxt='Sin conexión'; if (window.Mobs && Mobs.setBossReporter) Mobs.setBossReporter(null); },
     }, (window.Account && Account.secret) ? Account.secret() : '');
   }
-  // aplica oro/materiales autoritativos del mercado (directo, sin el guard de timestamp)
-  function applyMarketEconomy(gold, mats){
+  // aplica oro/materiales/equipo autoritativos del mercado (directo, sin el guard de timestamp)
+  function applyMarketEconomy(gold, mats, forgeObj){
     const c = (window.Account && Account.active) ? Account.active() : null;
+    if (forgeObj){ forge.weapon = forgeObj.weapon||0; forge.armor = forgeObj.armor||0; forge.amulet = forgeObj.amulet||0; }
     if (c){
       if (gold != null) c.gold = gold;
       if (mats) c.mats = mats;
+      if (forgeObj) c.forge = { weapon:forge.weapon, armor:forge.armor, amulet:forge.amulet };
       c.updated = Date.now();
       if (window.Mobs && Mobs.bindLoot) Mobs.bindLoot(c);
       if (Account.save) Account.save();
@@ -238,7 +240,7 @@ const World3D = (function(){
       const L = Mobs.getLoot();
       Mobs.setLoot({ gold: gold != null ? gold : L.gold, kills:L.kills, mats: mats || L.mats });
     }
-    if (panelOpen) {}   // (forja) — el HUD de oro se refresca solo en updateHUD
+    if (forgeObj){ saveForge(); recomputeVitals(); updateGearVisual(); }   // refleja el cambio de equipo (stats + visual)
   }
   function reconnect(char){ Net.disconnect(); remote.forEach(r=>{ if (r.model) r.model.dispose(); scene.remove(r.group); scene.remove(r.nameSprite); }); remote.clear(); connectNet(char); }
   function addRemote(p){
@@ -741,6 +743,10 @@ const World3D = (function(){
     if (marketOpen){ if (document.exitPointerLock) document.exitPointerLock(); if (window.Net && Net.connected && Net.connected()) Net.send({ t:'market:list' }); renderMarket(); }
   }
   function mkMeta(k){ return window.ITEMS ? ITEMS.meta(k) : { icon:'📦', color:'#9aa3b2', tier:'Material' }; }
+  function listingLabel(it){   // etiqueta de un item del mercado (material o equipo)
+    if (it.kind === 'gear'){ const n = { weapon:'Arma', armor:'Armadura', amulet:'Amuleto' }[it.slot] || 'Equipo'; const ic = { weapon:'⚔️', armor:'🛡️', amulet:'📿' }[it.slot] || '📦'; return { icon:ic, name:n + ' +' + it.level, color:'#ffce54' }; }
+    const m = mkMeta(it.name); return { icon:m.icon, name:it.name, color:m.color };
+  }
   function renderMarket(){
     if (!marketEl || marketEl.hidden) return;
     const L = (window.Mobs && Mobs.getLoot) ? Mobs.getLoot() : { gold:0, mats:{} };
@@ -748,21 +754,26 @@ const World3D = (function(){
     let body = '';
     if (marketTab === 'buy'){
       const others = marketCatalog.filter(x => x.seller !== myName);
-      body = others.length ? others.map(x => { const it = mkMeta(x.item.name); return '<div class="mk-row" style="--mc:'+it.color+'">'
-        + '<span class="mk-ic">'+it.icon+'</span><div class="mk-info"><b>'+esc(x.item.name)+'</b> ×'+x.qty+'<br><small>'+x.price+' oro c/u · 👤 '+esc(x.seller)+'</small></div>'
-        + '<input class="mk-qty" type="number" min="1" max="'+x.qty+'" value="1"><button class="mk-buy" data-id="'+esc(x.id)+'">Comprar</button></div>'; }).join('')
+      body = others.length ? others.map(x => { const lab = listingLabel(x.item), gear = x.item.kind === 'gear'; return '<div class="mk-row" style="--mc:'+lab.color+'">'
+        + '<span class="mk-ic">'+lab.icon+'</span><div class="mk-info"><b>'+esc(lab.name)+'</b>'+(gear?'':' ×'+x.qty)+'<br><small>'+x.price+' oro'+(gear?'':' c/u')+' · 👤 '+esc(x.seller)+(gear?' · tu actual +'+(forge[x.item.slot]||0):'')+'</small></div>'
+        + (gear ? '' : '<input class="mk-qty" type="number" min="1" max="'+x.qty+'" value="1">')
+        + '<button class="mk-buy" data-id="'+esc(x.id)+'">Comprar</button></div>'; }).join('')
         : '<div class="mk-empty">— no hay nada a la venta —</div>';
     } else if (marketTab === 'sell'){
       const keys = Object.keys(L.mats||{}).filter(k => (L.mats[k]||0) > 0);
-      body = keys.length ? keys.map(k => { const it = mkMeta(k); return '<div class="mk-row" style="--mc:'+it.color+'">'
+      const matRows = keys.map(k => { const it = mkMeta(k); return '<div class="mk-row" style="--mc:'+it.color+'">'
         + '<span class="mk-ic">'+it.icon+'</span><div class="mk-info"><b>'+esc(k)+'</b><br><small>tienes '+L.mats[k]+'</small></div>'
         + '<input class="mk-sq" type="number" min="1" max="'+L.mats[k]+'" value="1" title="cantidad"><input class="mk-sp" type="number" min="1" value="50" title="precio c/u">'
-        + '<button class="mk-sell" data-name="'+esc(k)+'">Publicar</button></div>'; }).join('')
-        : '<div class="mk-empty">— no tienes materiales · caza bestias y Jefes —</div>';
+        + '<button class="mk-sell" data-name="'+esc(k)+'">Publicar</button></div>'; }).join('');
+      const gearRows = ['weapon','armor','amulet'].filter(s => (forge[s]||0) > 0).map(s => { const ic = { weapon:'⚔️', armor:'🛡️', amulet:'📿' }[s], nm = FORGE[s].name; return '<div class="mk-row" style="--mc:#ffce54">'
+        + '<span class="mk-ic">'+ic+'</span><div class="mk-info"><b>'+nm+' +'+forge[s]+'</b><br><small>equipo forjado · al venderlo tu slot vuelve a +0</small></div>'
+        + '<input class="mk-gp" type="number" min="1" value="500" title="precio"><button class="mk-sellgear" data-slot="'+s+'">Vender +'+forge[s]+'</button></div>'; }).join('');
+      const sec = (gearRows ? '<div class="mk-sec">⚒️ Equipo forjado</div>'+gearRows : '') + (matRows ? '<div class="mk-sec">📦 Materiales</div>'+matRows : '');
+      body = sec || '<div class="mk-empty">— no tienes nada para vender · caza y forja —</div>';
     } else {
       const mine = marketCatalog.filter(x => x.seller === myName);
-      const lst = mine.length ? mine.map(x => { const it = mkMeta(x.item.name); return '<div class="mk-row" style="--mc:'+it.color+'">'
-        + '<span class="mk-ic">'+it.icon+'</span><div class="mk-info"><b>'+esc(x.item.name)+'</b> ×'+x.qty+'<br><small>'+x.price+' oro c/u</small></div>'
+      const lst = mine.length ? mine.map(x => { const lab = listingLabel(x.item), gear = x.item.kind === 'gear'; return '<div class="mk-row" style="--mc:'+lab.color+'">'
+        + '<span class="mk-ic">'+lab.icon+'</span><div class="mk-info"><b>'+esc(lab.name)+'</b>'+(gear?'':' ×'+x.qty)+'<br><small>'+x.price+' oro</small></div>'
         + '<button class="mk-cancel" data-id="'+esc(x.id)+'">Cancelar</button></div>'; }).join('') : '<div class="mk-empty">— sin listados activos —</div>';
       const rec = marketReceipts.length ? '<div class="mk-rec"><b>🧾 Ventas mientras no estabas:</b>'+marketReceipts.map(r => '<div>'+r.qty+'× '+esc(r.item)+' → +'+r.total+' oro (a '+esc(r.buyer)+')</div>').join('')+'</div>' : '';
       body = lst + rec;
@@ -772,11 +783,12 @@ const World3D = (function(){
       + '<div class="wp-gold">💰 '+L.gold+' oro · 👤 '+esc(myName||'')+'</div>'
       + '<div class="mk-tabs">'+tabBtn('buy','🛒 Comprar')+tabBtn('sell','🏷️ Vender')+tabBtn('mine','📦 Mis ventas')+'</div>'
       + '<div class="mk-list">'+body+'</div>'
-      + '<div class="mk-hint">Tus materiales listados salen del inventario (escrow). Si alguien compra estando tú offline, recibes el oro al reconectar.</div></div>';
+      + '<div class="mk-hint">Lo que listas (materiales o equipo) sale de ti en el acto (escrow). Vender un equipo +N pone tu slot en +0; quien lo compra lo equipa. Si te compran estando offline, recibes el oro al reconectar.</div></div>';
     marketEl.querySelector('#mk-close').onclick = toggleMarket;
     marketEl.querySelectorAll('.mk-tab').forEach(b => b.onclick = () => { marketTab = b.dataset.tab; renderMarket(); });
-    marketEl.querySelectorAll('.mk-buy').forEach(b => b.onclick = () => { const r=b.closest('.mk-row'); Net.send({ t:'market:buy', id:b.dataset.id, qty:Math.max(1, +r.querySelector('.mk-qty').value||1) }); });
+    marketEl.querySelectorAll('.mk-buy').forEach(b => b.onclick = () => { const r=b.closest('.mk-row'), qi=r.querySelector('.mk-qty'); Net.send({ t:'market:buy', id:b.dataset.id, qty: qi ? Math.max(1, +qi.value||1) : 1 }); });
     marketEl.querySelectorAll('.mk-sell').forEach(b => b.onclick = () => { const r=b.closest('.mk-row'); Net.send({ t:'market:create', name:b.dataset.name, qty:Math.max(1,+r.querySelector('.mk-sq').value||1), price:Math.max(1,+r.querySelector('.mk-sp').value||1) }); });
+    marketEl.querySelectorAll('.mk-sellgear').forEach(b => b.onclick = () => { const r=b.closest('.mk-row'); if (confirm('Vender '+FORGE[b.dataset.slot].name+' +'+forge[b.dataset.slot]+'? Tu slot volverá a +0.')) Net.send({ t:'market:create', kind:'gear', slot:b.dataset.slot, price:Math.max(1,+r.querySelector('.mk-gp').value||1) }); });
     marketEl.querySelectorAll('.mk-cancel').forEach(b => b.onclick = () => Net.send({ t:'market:cancel', id:b.dataset.id }));
   }
   function togglePanel(){ if (!panelEl) return; panelOpen = panelEl.hidden; panelEl.hidden = !panelOpen; if (panelOpen){ buildPanel(); if (document.exitPointerLock) document.exitPointerLock(); } }

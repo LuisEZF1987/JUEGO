@@ -49,6 +49,8 @@ try { const mm = JSON.parse(fs.readFileSync(MARKET_FILE, 'utf8')); if (mm && mm.
 function persistMarket(){ writeJsonAtomicSync(MARKET_FILE, market); }
 const MAT_WHITELIST = new Set(['Lingote de Hierro','Madera de Roble','Polvo de Refinamiento','Cristal de Refinamiento','Cristal Divino','Adamantita Estelar','Brasa Eterna','Pluma de Tempestad','Fragmento de Trueno','Corazón Pétreo','Lágrima Abisal','Savia Eterna']);
 const MAX_LISTINGS = 12;   // tope de listados activos por cuenta (anti-spam)
+const GEAR_SLOTS = new Set(['weapon', 'armor', 'amulet']);   // Incremento 2: vender equipo forjado
+function gearName(it){ return ({ weapon:'Arma', armor:'Armadura', amulet:'Amuleto' }[it.slot] || 'Equipo') + ' +' + it.level; }
 function intc(v, lo, hi){ v = Math.floor(+v || 0); return Math.max(lo, Math.min(hi, v)); }
 function matCount(sv, name){ return (sv && sv.mats && sv.mats[name]) || 0; }
 function activeListingsOf(name){ let n = 0; for (const id in market.listings){ const L = market.listings[id]; if (L.seller === name && L.status === 'active') n++; } return n; }
@@ -231,11 +233,27 @@ function handleMsg(c, data){
 
   } else if (m.t === 'market:create'){
     if (!c.authed) return send(c, { t:'market:err', code:'auth', msg:'Identidad no verificada' });
-    const name = '' + (m.name || ''), qty = intc(m.qty, 1, 9999), price = intc(m.price, 1, 1e9);
+    const price = intc(m.price, 1, 1e9);
     const sv = saves[c.name];
+    if (!sv) return send(c, { t:'market:err', code:'no_acc' });
+    if (activeListingsOf(c.name) >= MAX_LISTINGS) return send(c, { t:'market:err', code:'too_many', msg:'Demasiados listados activos (máx ' + MAX_LISTINGS + ')' });
+    if (m.kind === 'gear'){   // vender equipo forjado: EXTRAE el enchant del personaje (slot → 0)
+      const slot = '' + (m.slot || '');
+      if (!GEAR_SLOTS.has(slot)) return send(c, { t:'market:err', code:'bad_args', msg:'Slot inválido' });
+      sv.forge = sv.forge || { weapon:0, armor:0, amulet:0 };
+      const lv = sv.forge[slot] || 0;
+      if (lv < 1) return send(c, { t:'market:err', code:'no_stock', msg:'No tienes ese equipo forjado' });
+      sv.forge[slot] = 0; sv.ts = Date.now();   // ESCROW: el enchant sale del personaje
+      const gid = 'L' + (++market.nextId);
+      market.listings[gid] = { id:gid, seller:c.name, item:{ kind:'gear', slot, level:lv }, qty:1, qty0:1, price, ts:Date.now(), status:'active' };
+      persistSavesNow(); persistMarket();
+      send(c, { t:'save', save:sv });
+      send(c, { t:'market:created', listing: market.listings[gid], forge: sv.forge });
+      return;
+    }
+    const name = '' + (m.name || ''), qty = intc(m.qty, 1, 9999);
     if (!MAT_WHITELIST.has(name)) return send(c, { t:'market:err', code:'bad_args', msg:'Material inválido' });
     if (matCount(sv, name) < qty) return send(c, { t:'market:err', code:'no_stock', msg:'No tienes esa cantidad' });
-    if (activeListingsOf(c.name) >= MAX_LISTINGS) return send(c, { t:'market:err', code:'too_many', msg:'Demasiados listados activos (máx ' + MAX_LISTINGS + ')' });
     sv.mats[name] -= qty; if (sv.mats[name] <= 0) delete sv.mats[name];   // ESCROW: el stock sale del inventario
     sv.ts = Date.now();
     const id = 'L' + (++market.nextId);
@@ -246,11 +264,27 @@ function handleMsg(c, data){
 
   } else if (m.t === 'market:buy'){
     if (!c.authed) return send(c, { t:'market:err', code:'auth' });
-    const L = market.listings['' + (m.id || '')], qty = intc(m.qty, 1, 9999);
+    const L = market.listings['' + (m.id || '')];
     if (!L || L.status !== 'active') return send(c, { t:'market:err', code:'gone', msg:'Listado no disponible' });
-    if (qty > L.qty) return send(c, { t:'market:err', code:'no_stock', msg:'Cantidad no disponible' });
     if (L.seller === c.name) return send(c, { t:'market:err', code:'own', msg:'Es tu propio listado' });
     const buyer = saves[c.name]; if (!buyer) return send(c, { t:'market:err', code:'no_acc' });
+    if (L.item.kind === 'gear'){   // comprar equipo: el comprador EQUIPA el +N (nunca baja de su nivel actual)
+      const cost = L.price;
+      if ((buyer.gold || 0) < cost) return send(c, { t:'market:err', code:'no_gold', msg:'Oro insuficiente' });
+      buyer.gold -= cost; buyer.forge = buyer.forge || { weapon:0, armor:0, amulet:0 };
+      buyer.forge[L.item.slot] = Math.max(buyer.forge[L.item.slot] || 0, L.item.level); buyer.ts = Date.now();
+      L.qty = 0; L.status = 'sold';
+      const gseller = saves[L.seller];
+      if (gseller){ gseller.gold = (gseller.gold || 0) + cost; gseller.ts = Date.now(); }
+      (market.receipts[L.seller] = market.receipts[L.seller] || []).push({ listingId:L.id, item:gearName(L.item), qty:1, unit:cost, total:cost, buyer:c.name, ts:Date.now() });
+      persistSavesNow(); persistMarket();
+      send(c, { t:'save', save:buyer });
+      send(c, { t:'market:bought', id:L.id, kind:'gear', slot:L.item.slot, level:L.item.level, name:gearName(L.item), qty:1, total:cost, gold:buyer.gold, forge:buyer.forge });
+      for (const o of clients.values()){ if (o.name === L.seller && gseller){ send(o, { t:'market:sold', id:L.id, name:gearName(L.item), qty:1, total:cost, buyer:c.name, gold:gseller.gold }); send(o, { t:'save', save:gseller }); break; } }
+      return;
+    }
+    const qty = intc(m.qty, 1, 9999);
+    if (qty > L.qty) return send(c, { t:'market:err', code:'no_stock', msg:'Cantidad no disponible' });
     const cost = L.price * qty;
     if ((buyer.gold || 0) < cost) return send(c, { t:'market:err', code:'no_gold', msg:'Oro insuficiente' });
     // sección crítica síncrona: validar → mutar → persistir (sin await/callback en medio)
@@ -269,6 +303,13 @@ function handleMsg(c, data){
     const L = market.listings['' + (m.id || '')];
     if (!L || L.seller !== c.name || L.status !== 'active') return send(c, { t:'market:err', code:'not_owner', msg:'No es tu listado' });
     const sv = saves[c.name];
+    if (L.item.kind === 'gear'){   // devuelve el enchant al personaje
+      if (sv){ sv.forge = sv.forge || { weapon:0, armor:0, amulet:0 }; sv.forge[L.item.slot] = Math.max(sv.forge[L.item.slot] || 0, L.item.level); sv.ts = Date.now(); }
+      L.status = 'cancelled';
+      persistSavesNow(); persistMarket();
+      if (sv){ send(c, { t:'save', save:sv }); send(c, { t:'market:cancelled', id:L.id, forge: sv.forge }); }
+      return;
+    }
     if (sv){ sv.mats = sv.mats || {}; sv.mats[L.item.name] = (sv.mats[L.item.name] || 0) + L.qty; sv.ts = Date.now(); }   // devuelve el escrow
     L.status = 'cancelled';
     persistSavesNow(); persistMarket();
