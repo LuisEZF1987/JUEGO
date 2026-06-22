@@ -8,6 +8,7 @@
 const World3D = (function(){
   let THREE, renderer, scene, camera, composer, raf = 0, active = false, last = 0;
   let canvasEl, ground, sky, embers, dn = null, weather = null;   // dn = ciclo día-noche; weather = clima por nación
+  let QHI = false;   // tier de calidad alto (GPU real) → activa sombras; software (SwiftShader) → bajo
   let player = null;                 // jugador local
   const remote = new Map();          // id -> jugador remoto
   let nations = [];
@@ -91,6 +92,10 @@ const World3D = (function(){
     renderer.setPixelRatio(1); renderer.setSize(canvas.width, canvas.height, false);
     renderer.outputEncoding = THREE.sRGBEncoding;
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+    // detección de calidad: WebGL por software (SwiftShader/llvmpipe) = tier bajo → sin sombras
+    try { const gl = renderer.getContext(); const dbg = gl.getExtension('WEBGL_debug_renderer_info'); const rn = dbg ? (gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)||'') : ''; QHI = !/swiftshader|llvmpipe|software|basic render/i.test(rn); } catch(e){ QHI = true; }
+    if (typeof location !== 'undefined' && /[?&]hi=1/.test(location.search)) QHI = true;   // forzar (pruebas)
+    if (QHI){ renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; }
 
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(52, canvas.width/canvas.height, 0.3, 1300);
@@ -98,7 +103,12 @@ const World3D = (function(){
 
     const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x202830, 0.65); scene.add(hemi);
     const ambient = new THREE.AmbientLight(0xffffff, 0.3); scene.add(ambient);
-    const sun = new THREE.DirectionalLight(0xffffff, 1.0); sun.position.set(14, 22, 10); scene.add(sun);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.0); sun.position.set(14, 22, 10); scene.add(sun); scene.add(sun.target);
+    if (QHI){   // sombras del sol (la cámara de sombra sigue al jugador → sombras nítidas cerca)
+      sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+      const sc = sun.shadow.camera; sc.left=-44; sc.right=44; sc.top=44; sc.bottom=-44; sc.near=1; sc.far=360; sc.updateProjectionMatrix();
+      sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.05;
+    }
 
     const skyMat = new THREE.ShaderMaterial({ side:THREE.BackSide, depthWrite:false,
       uniforms:{ top:{ value:new THREE.Color(0x2a3a6a) }, bot:{ value:new THREE.Color(0x0c0e16) } },
@@ -173,7 +183,7 @@ const World3D = (function(){
     geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
     geo.computeVertexNormals();
     const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors:true, roughness:1, metalness:0 }));
-    m.rotation.x = -Math.PI/2; scene.add(m);
+    m.rotation.x = -Math.PI/2; m.receiveShadow = true; scene.add(m);
     return m;
   }
 
@@ -182,7 +192,7 @@ const World3D = (function(){
     ground = buildTerrain();
     window.__terrainH = terrainHeight;   // los mobs (mobs.js) la usan para seguir el relieve
     const plaza = new THREE.Mesh(new THREE.CircleGeometry(18, 48), new THREE.MeshStandardMaterial({ color:0x2a2f3e, roughness:1 }));
-    plaza.rotation.x = -Math.PI/2; plaza.position.y = 0.04; scene.add(plaza);
+    plaza.rotation.x = -Math.PI/2; plaza.position.y = 0.04; plaza.receiveShadow = true; scene.add(plaza);
 
     nations.forEach((n, idx) => {
       const t = NATION_THEME[n.element], acc = new THREE.Color(t.accent);
@@ -899,7 +909,9 @@ const World3D = (function(){
     if (scene.fog) lerpHex(scene.fog.color, a.fog, b.fog);
     if (renderer) renderer.toneMappingExposure = a.ex + (b.ex - a.ex) * f;
     const ang = (t - 0.25) * Math.PI * 2;   // sale por el este, cenit, se pone por el oeste
-    dn.sun.position.set(Math.cos(ang) * 80, Math.max(6, Math.sin(ang) * 90), 35);
+    const sx = Math.cos(ang) * 80, sy = Math.max(8, Math.sin(ang) * 90), sz = 35, sl = Math.hypot(sx, sy, sz) || 1;
+    dn.sunDir = { x: sx/sl, y: sy/sl, z: sz/sl };   // dirección del sol (para que la sombra siga al jugador)
+    dn.sun.position.set(sx, sy, sz);
     // factor de noche → enciende faroles ("islas de luz cálida" en la oscuridad)
     dn.night = Math.max(0, Math.min(1, 1 - (dn.sun.intensity - 0.2) / 0.9));
     if (window.Town && Town.setNight) Town.setNight(dn.night);
@@ -973,6 +985,11 @@ const World3D = (function(){
         if (mx||mz){ const d=Math.hypot(mx,mz); mx/=d; mz/=d; const sp=keys.has('shift')?13:7.5; player.group.position.x+=mx*sp*dt; player.group.position.z+=mz*sp*dt; player.targetFacing=Math.atan2(mx,mz); moving=true; }
         const R=140; player.group.position.x=Math.max(-R,Math.min(R,player.group.position.x)); player.group.position.z=Math.max(-R,Math.min(R,player.group.position.z));
         player.group.position.y = terrainHeight(player.group.position.x, player.group.position.z);   // sigue el relieve del terreno
+        if (QHI && dn && dn.sunDir){   // la cámara de sombra del sol sigue al jugador
+          const pp = player.group.position, d = dn.sunDir;
+          dn.sun.position.set(pp.x + d.x*150, pp.y + d.y*150, pp.z + d.z*150);
+          dn.sun.target.position.copy(pp); dn.sun.target.updateMatrixWorld();
+        }
         updateAutoAttack(dt);
       }
       player.group.rotation.y = lerpAngle(player.group.rotation.y, player.targetFacing, 0.2);
