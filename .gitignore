@@ -1,0 +1,3 @@
+# 'ingles/' es un proyecto independiente con su propio repo (LuisEZF1987/INGLES).
+# Se ignora aquí para que el repo JUEGO no lo rastree.
+/ingles/
